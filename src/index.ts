@@ -254,7 +254,18 @@ async function main(): Promise<void> {
       if (!group) return;
       saveRegisteredGroup({ ...group, model });
     },
-    compact: (chatJid) => compactGroup(chatJid),
+    compact: async (chatJid) => {
+      const group = registeredGroups[chatJid];
+      if (!group) return 'Group not found.';
+      let resultText = 'Conversation compacted.';
+      await runAgent(group, '/compact', chatJid, async (result) => {
+        if (result.result) {
+          const text = formatOutbound(result.result);
+          if (text) resultText = text;
+        }
+      });
+      return resultText;
+    },
   });
 
   if (!discord) {

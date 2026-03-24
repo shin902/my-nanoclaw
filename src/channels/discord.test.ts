@@ -103,7 +103,7 @@ describe('DiscordChannel', () => {
       }),
       resetSession: vi.fn(),
       updateModel: vi.fn(),
-      compact: vi.fn(async () => {}),
+      compact: vi.fn(async () => 'Conversation compacted.'),
     });
 
     await channel.connect();
@@ -140,7 +140,7 @@ describe('DiscordChannel', () => {
       }),
       resetSession,
       updateModel: vi.fn(),
-      compact: vi.fn(async () => {}),
+      compact: vi.fn(async () => 'Conversation compacted.'),
     });
 
     await channel.connect();

@@ -20,7 +20,7 @@ export interface DiscordChannelOpts {
   getGroupConfig: (chatJid: string) => StoredGroupConfig | undefined;
   resetSession: (chatJid: string) => void;
   updateModel: (chatJid: string, model: string) => void;
-  compact: (chatJid: string) => Promise<void>;
+  compact: (chatJid: string) => Promise<string>;
 }
 
 export class DiscordChannel implements Channel {
@@ -60,8 +60,9 @@ export class DiscordChannel implements Channel {
     }
 
     if (interaction.commandName === 'compact') {
-      await this.opts.compact(chatJid);
-      await interaction.reply('Conversation compacted.');
+      await interaction.deferReply();
+      const result = await this.opts.compact(chatJid);
+      await interaction.editReply(result);
     }
   }
 
