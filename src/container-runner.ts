@@ -165,6 +165,14 @@ function buildContainerArgs(
   // ホストゲートウェイ解決のためのランタイム固有の引数
   args.push(...hostGatewayArgs());
 
+  // SSH Agent Forwarding: コンテナ内の Git コマンドがホストの SSH キーにアクセス可能にする
+  // (秘密鍵ファイル自体はコンテナから見えず、ホスト側の ssh-agent 経由でのみアクセス)
+  const sshAuthSock = process.env.SSH_AUTH_SOCK;
+  if (sshAuthSock) {
+    args.push('-v', `${sshAuthSock}:${sshAuthSock}`);
+    args.push('-e', `SSH_AUTH_SOCK=${sshAuthSock}`);
+  }
+
   // バインドマウントされたファイルにアクセスできるよう、ホストユーザーとして実行。
   // root (uid 0)、コンテナの node ユーザー (uid 1000)、または
   // getuid が利用できない場合（WSL ではないネイティブ Windows）はスキップ。
