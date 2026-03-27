@@ -569,9 +569,8 @@ export interface AvailableChat {
 }
 
 /**
- * コンテナが読み取るための利用可能なグループのスナップショットを書き込みます。
- * メイングループのみが、すべての利用可能なグループを表示できます（アクティブ化のため）。
- * メイン以外のグループは、自身の登録ステータスのみを表示できます。
+ * コンテナが読み取るための利用可能なチャット一覧のスナップショットを書き込みます。
+ * 現在は権限差分を設けず、すべてのチャットで同じ一覧を共有します。
  */
 export function writeGroupsSnapshot(chats: AvailableChat[]): void {
   const ipcDir = path.join(DATA_DIR, 'ipc');
