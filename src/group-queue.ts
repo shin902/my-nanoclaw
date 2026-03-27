@@ -276,11 +276,12 @@ export class GroupQueue {
       { groupJid, retryCount: state.retryCount, delayMs },
       'Scheduling retry with backoff',
     );
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (!this.shuttingDown) {
         this.enqueueMessageCheck(groupJid);
       }
     }, delayMs);
+    timer.unref?.();
   }
 
   private drainGroup(groupJid: string): void {

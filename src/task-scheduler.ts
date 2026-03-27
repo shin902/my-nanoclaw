@@ -9,17 +9,17 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  appendTaskLog,
   getAllTasks,
   getDueTasks,
   getTaskById,
-  logTaskRun,
+  loadGroupConfig,
   updateTask,
-  updateTaskAfterRun,
-} from './db.js';
+} from './store.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { ScheduledTask } from './types.js';
 
 /**
  * 定期実行タスクの次回の実行時間を計算します。
@@ -63,8 +63,6 @@ export function computeNextRun(task: ScheduledTask): string | null {
 }
 
 export interface SchedulerDependencies {
-  registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -91,7 +89,7 @@ async function runTask(
       { taskId: task.id, groupFolder: task.group_folder, error },
       'Task has invalid group folder',
     );
-    logTaskRun({
+    appendTaskLog({
       task_id: task.id,
       run_at: new Date().toISOString(),
       duration_ms: Date.now() - startTime,
@@ -108,17 +106,14 @@ async function runTask(
     'Running scheduled task',
   );
 
-  const groups = deps.registeredGroups();
-  const group = Object.values(groups).find(
-    (g) => g.folder === task.group_folder,
-  );
+  const group = loadGroupConfig(task.group_folder);
 
   if (!group) {
     logger.error(
       { taskId: task.id, groupFolder: task.group_folder },
       'Group not found for task',
     );
-    logTaskRun({
+    appendTaskLog({
       task_id: task.id,
       run_at: new Date().toISOString(),
       duration_ms: Date.now() - startTime,
@@ -130,11 +125,9 @@ async function runTask(
   }
 
   // コンテナが読み取るためのタスクスナップショットを更新します（グループでフィルタリング）
-  const isMain = group.isMain === true;
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,
-    isMain,
     tasks.map((t) => ({
       id: t.id,
       groupFolder: t.group_folder,
@@ -148,11 +141,7 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
-
-  // グループコンテキストモードの場合、グループの現在のセッションを使用します
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  const sessionId = task.context_mode === 'group' ? group.sessionId : undefined;
 
   // タスクが結果を出力した後、速やかにコンテナを閉じます。
   // タスクはシングルターン（1往復）であり、クエリループがタイムアウトするまで
@@ -170,13 +159,19 @@ async function runTask(
 
   try {
     const output = await runContainerAgent(
-      group,
+      {
+        name: group.name,
+        folder: group.folder,
+        trigger: '',
+        added_at: group.added_at,
+        containerConfig: group.containerConfig,
+      },
       {
         prompt: task.prompt,
         sessionId,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
-        isMain,
+        model: group.model,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
@@ -220,7 +215,7 @@ async function runTask(
 
   const durationMs = Date.now() - startTime;
 
-  logTaskRun({
+  appendTaskLog({
     task_id: task.id,
     run_at: new Date().toISOString(),
     duration_ms: durationMs,
@@ -235,7 +230,12 @@ async function runTask(
     : result
       ? result.slice(0, 200)
       : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  updateTask(task.id, {
+    next_run: nextRun,
+    last_run: new Date().toISOString(),
+    last_result: resultSummary,
+    status: nextRun === null ? 'completed' : task.status,
+  });
 }
 
 let schedulerRunning = false;
@@ -270,7 +270,8 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       logger.error({ err }, 'Error in scheduler loop');
     }
 
-    setTimeout(loop, SCHEDULER_POLL_INTERVAL);
+    const timer = setTimeout(loop, SCHEDULER_POLL_INTERVAL);
+    timer.unref?.();
   };
 
   loop();

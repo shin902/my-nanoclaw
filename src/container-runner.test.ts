@@ -46,11 +46,6 @@ vi.mock('fs', async () => {
   };
 });
 
-// Mock mount-security
-vi.mock('./mount-security.js', () => ({
-  validateAdditionalMounts: vi.fn(() => []),
-}));
-
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {
@@ -100,7 +95,7 @@ const testInput = {
   prompt: 'Hello',
   groupFolder: 'test-group',
   chatJid: 'test@g.us',
-  isMain: false,
+  model: 'claude-sonnet-4-6',
 };
 
 function emitOutputMarker(

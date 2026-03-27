@@ -1,6 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock logger
+const mockExecSync = vi.hoisted(() =>
+  vi.fn<(command: unknown, options?: unknown) => unknown>(),
+);
+const mockExistsSync = vi.hoisted(() =>
+  vi.fn<(filePath: unknown) => boolean>(() => false),
+);
+const mockNetworkInterfaces = vi.hoisted(() =>
+  vi.fn<() => Record<string, Array<{ family: string; address: string }>>>(
+    () => ({}),
+  ),
+);
+const mockPlatform = vi.hoisted(() => vi.fn<() => string>(() => 'linux'));
+
 vi.mock('./logger.js', () => ({
   logger: {
     debug: vi.fn(),
@@ -10,95 +22,141 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-// Mock child_process — store the mock fn so tests can configure it
-const mockExecSync = vi.fn();
 vi.mock('child_process', () => ({
-  execSync: (...args: unknown[]) => mockExecSync(...args),
+  execSync: (command: unknown, options?: unknown) =>
+    mockExecSync(command, options),
 }));
 
-import {
-  CONTAINER_RUNTIME_BIN,
-  readonlyMountArgs,
-  stopContainer,
-  ensureContainerRuntimeRunning,
-  cleanupOrphans,
-} from './container-runtime.js';
+vi.mock('fs', () => ({
+  default: {
+    existsSync: (filePath: unknown) => mockExistsSync(filePath),
+  },
+}));
+
+vi.mock('os', () => ({
+  default: {
+    platform: () => mockPlatform(),
+    networkInterfaces: () => mockNetworkInterfaces(),
+  },
+}));
+
 import { logger } from './logger.js';
+
+async function loadModule() {
+  vi.resetModules();
+  return import('./container-runtime.js');
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete process.env.CREDENTIAL_PROXY_HOST;
+  mockPlatform.mockReturnValue('linux');
+  mockExistsSync.mockReturnValue(false);
+  mockNetworkInterfaces.mockReturnValue({});
 });
 
-// --- Pure functions ---
+describe('runtime platform detection', () => {
+  it('uses loopback bind host on macOS', async () => {
+    mockPlatform.mockReturnValue('darwin');
+    const mod = await loadModule();
+    expect(mod.PROXY_BIND_HOST).toBe('127.0.0.1');
+    expect(mod.hostGatewayArgs()).toEqual([]);
+  });
+
+  it('uses loopback bind host on WSL', async () => {
+    mockExistsSync.mockReturnValue(true);
+    const mod = await loadModule();
+    expect(mod.PROXY_BIND_HOST).toBe('127.0.0.1');
+  });
+
+  it('uses docker0 address on Linux when present', async () => {
+    mockNetworkInterfaces.mockReturnValue({
+      docker0: [{ family: 'IPv4', address: '172.17.0.1' }],
+    });
+    const mod = await loadModule();
+    expect(mod.PROXY_BIND_HOST).toBe('172.17.0.1');
+    expect(mod.hostGatewayArgs()).toEqual([
+      '--add-host=host.docker.internal:host-gateway',
+    ]);
+  });
+
+  it('falls back to 0.0.0.0 on Linux without docker0', async () => {
+    const mod = await loadModule();
+    expect(mod.PROXY_BIND_HOST).toBe('0.0.0.0');
+  });
+});
 
 describe('readonlyMountArgs', () => {
-  it('returns -v flag with :ro suffix', () => {
-    const args = readonlyMountArgs('/host/path', '/container/path');
-    expect(args).toEqual(['-v', '/host/path:/container/path:ro']);
+  it('returns -v flag with :ro suffix', async () => {
+    const mod = await loadModule();
+    expect(mod.readonlyMountArgs('/host/path', '/container/path')).toEqual([
+      '-v',
+      '/host/path:/container/path:ro',
+    ]);
   });
 });
 
 describe('stopContainer', () => {
-  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
-    expect(stopContainer('nanoclaw-test-123')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-test-123`,
+  it('returns stop command using CONTAINER_RUNTIME_BIN', async () => {
+    const mod = await loadModule();
+    expect(mod.stopContainer('nanoclaw-test-123')).toBe(
+      `${mod.CONTAINER_RUNTIME_BIN} stop nanoclaw-test-123`,
     );
   });
 });
 
-// --- ensureContainerRuntimeRunning ---
-
 describe('ensureContainerRuntimeRunning', () => {
-  it('does nothing when runtime is already running', () => {
+  it('does nothing when runtime is already running', async () => {
     mockExecSync.mockReturnValueOnce('');
+    const mod = await loadModule();
 
-    ensureContainerRuntimeRunning();
+    mod.ensureContainerRuntimeRunning();
 
     expect(mockExecSync).toHaveBeenCalledTimes(1);
-    expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} info`, {
-      stdio: 'pipe',
-      timeout: 10000,
-    });
+    expect(mockExecSync).toHaveBeenCalledWith(
+      `${mod.CONTAINER_RUNTIME_BIN} info`,
+      {
+        stdio: 'pipe',
+        timeout: 10000,
+      },
+    );
     expect(logger.debug).toHaveBeenCalledWith(
       'Container runtime already running',
     );
   });
 
-  it('throws when docker info fails', () => {
+  it('throws when docker info fails', async () => {
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('Cannot connect to the Docker daemon');
     });
+    const mod = await loadModule();
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
+    expect(() => mod.ensureContainerRuntimeRunning()).toThrow(
       'Container runtime is required but failed to start',
     );
     expect(logger.error).toHaveBeenCalled();
   });
 });
 
-// --- cleanupOrphans ---
-
 describe('cleanupOrphans', () => {
-  it('stops orphaned nanoclaw containers', () => {
-    // docker ps returns container names, one per line
+  it('stops orphaned nanoclaw containers', async () => {
     mockExecSync.mockReturnValueOnce(
       'nanoclaw-group1-111\nnanoclaw-group2-222\n',
     );
-    // stop calls succeed
     mockExecSync.mockReturnValue('');
+    const mod = await loadModule();
 
-    cleanupOrphans();
+    mod.cleanupOrphans();
 
-    // ps + 2 stop calls
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-group1-111`,
+      `${mod.CONTAINER_RUNTIME_BIN} stop nanoclaw-group1-111`,
       { stdio: 'pipe' },
     );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       3,
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-group2-222`,
+      `${mod.CONTAINER_RUNTIME_BIN} stop nanoclaw-group2-222`,
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
@@ -107,21 +165,23 @@ describe('cleanupOrphans', () => {
     );
   });
 
-  it('does nothing when no orphans exist', () => {
+  it('does nothing when no orphans exist', async () => {
     mockExecSync.mockReturnValueOnce('');
+    const mod = await loadModule();
 
-    cleanupOrphans();
+    mod.cleanupOrphans();
 
     expect(mockExecSync).toHaveBeenCalledTimes(1);
     expect(logger.info).not.toHaveBeenCalled();
   });
 
-  it('warns and continues when ps fails', () => {
+  it('warns and continues when ps fails', async () => {
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('docker not available');
     });
+    const mod = await loadModule();
 
-    cleanupOrphans(); // should not throw
+    mod.cleanupOrphans();
 
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
@@ -129,16 +189,15 @@ describe('cleanupOrphans', () => {
     );
   });
 
-  it('continues stopping remaining containers when one stop fails', () => {
+  it('continues stopping remaining containers when one stop fails', async () => {
     mockExecSync.mockReturnValueOnce('nanoclaw-a-1\nnanoclaw-b-2\n');
-    // First stop fails
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
     });
-    // Second stop succeeds
     mockExecSync.mockReturnValueOnce('');
+    const mod = await loadModule();
 
-    cleanupOrphans(); // should not throw
+    mod.cleanupOrphans();
 
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(

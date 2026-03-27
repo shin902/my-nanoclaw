@@ -1,17 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { _initTestDatabase, createTask, getTaskById } from './db.js';
+const testDataDir = vi.hoisted(
+  () =>
+    `/tmp/nanoclaw-scheduler-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+);
+
+vi.mock('./config.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('./config.js')>('./config.js');
+  return {
+    ...actual,
+    DATA_DIR: testDataDir,
+  };
+});
+
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
   startSchedulerLoop,
 } from './task-scheduler.js';
+import { saveActiveTasks } from './store.js';
 
 describe('task scheduler', () => {
   beforeEach(() => {
-    _initTestDatabase();
-    _resetSchedulerLoopForTests();
     vi.useFakeTimers();
+    saveActiveTasks([]);
+    _resetSchedulerLoopForTests();
   });
 
   afterEach(() => {
@@ -19,48 +33,44 @@ describe('task scheduler', () => {
   });
 
   it('pauses due tasks with invalid group folders to prevent retry churn', async () => {
-    createTask({
-      id: 'task-invalid-folder',
-      group_folder: '../../outside',
-      chat_jid: 'bad@g.us',
-      prompt: 'run',
-      schedule_type: 'once',
-      schedule_value: '2026-02-22T00:00:00.000Z',
-      context_mode: 'isolated',
-      next_run: new Date(Date.now() - 60_000).toISOString(),
-      status: 'active',
-      created_at: '2026-02-22T00:00:00.000Z',
-    });
-
-    const enqueueTask = vi.fn(
-      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
-        void fn();
+    saveActiveTasks([
+      {
+        id: 'task-invalid-folder',
+        group_folder: '../../outside',
+        chat_jid: 'bad@g.us',
+        prompt: 'run',
+        schedule_type: 'once',
+        schedule_value: '2026-02-22T00:00:00.000Z',
+        context_mode: 'isolated',
+        next_run: new Date(Date.now() - 60_000).toISOString(),
+        last_run: null,
+        last_result: null,
+        status: 'active',
+        created_at: '2026-02-22T00:00:00.000Z',
       },
-    );
+    ]);
 
     startSchedulerLoop({
-      registeredGroups: () => ({}),
-      getSessions: () => ({}),
-      queue: { enqueueTask } as any,
+      queue: { enqueueTask: vi.fn((_jid, _taskId, fn) => void fn()) } as any,
       onProcess: () => {},
       sendMessage: async () => {},
     });
 
     await vi.advanceTimersByTimeAsync(10);
 
-    const task = getTaskById('task-invalid-folder');
+    const [task] = (await import('./store.js')).loadActiveTasks();
     expect(task?.status).toBe('paused');
   });
 
   it('computeNextRun anchors interval tasks to scheduled time to prevent drift', () => {
-    const scheduledTime = new Date(Date.now() - 2000).toISOString(); // 2s ago
+    const scheduledTime = new Date(Date.now() - 2000).toISOString();
     const task = {
       id: 'drift-test',
       group_folder: 'test',
       chat_jid: 'test@g.us',
       prompt: 'test',
       schedule_type: 'interval' as const,
-      schedule_value: '60000', // 1 minute
+      schedule_value: '60000',
       context_mode: 'isolated' as const,
       next_run: scheduledTime,
       last_run: null,
@@ -71,59 +81,84 @@ describe('task scheduler', () => {
 
     const nextRun = computeNextRun(task);
     expect(nextRun).not.toBeNull();
-
-    // Should be anchored to scheduledTime + 60s, NOT Date.now() + 60s
-    const expected = new Date(scheduledTime).getTime() + 60000;
-    expect(new Date(nextRun!).getTime()).toBe(expected);
+    expect(new Date(nextRun!).getTime()).toBe(
+      new Date(scheduledTime).getTime() + 60000,
+    );
   });
 
-  it('computeNextRun returns null for once-tasks', () => {
+  it('computeNextRun returns null for once tasks after their scheduled time', () => {
+    const now = new Date('2026-01-01T00:10:00.000Z');
+    vi.setSystemTime(now);
+
+    const scheduledTime = '2026-01-01T00:00:00.000Z';
     const task = {
       id: 'once-test',
       group_folder: 'test',
       chat_jid: 'test@g.us',
-      prompt: 'test',
+      prompt: 'test once',
       schedule_type: 'once' as const,
-      schedule_value: '2026-01-01T00:00:00.000Z',
-      context_mode: 'isolated' as const,
-      next_run: new Date(Date.now() - 1000).toISOString(),
-      last_run: null,
-      last_result: null,
-      status: 'active' as const,
-      created_at: '2026-01-01T00:00:00.000Z',
-    };
-
-    expect(computeNextRun(task)).toBeNull();
-  });
-
-  it('computeNextRun skips missed intervals without infinite loop', () => {
-    // Task was due 10 intervals ago (missed)
-    const ms = 60000;
-    const missedBy = ms * 10;
-    const scheduledTime = new Date(Date.now() - missedBy).toISOString();
-
-    const task = {
-      id: 'skip-test',
-      group_folder: 'test',
-      chat_jid: 'test@g.us',
-      prompt: 'test',
-      schedule_type: 'interval' as const,
-      schedule_value: String(ms),
+      schedule_value: scheduledTime,
       context_mode: 'isolated' as const,
       next_run: scheduledTime,
       last_run: null,
       last_result: null,
       status: 'active' as const,
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: '2025-12-31T23:00:00.000Z',
+    };
+
+    const nextRun = computeNextRun(task);
+    expect(nextRun).toBeNull();
+  });
+
+  it('computeNextRun skips missed intervals and schedules at the next aligned future time', () => {
+    const anchorTime = new Date('2026-01-01T00:00:00.000Z');
+    const now = new Date('2026-01-01T00:05:30.000Z');
+    vi.setSystemTime(now);
+
+    const task = {
+      id: 'missed-intervals-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test intervals',
+      schedule_type: 'interval' as const,
+      schedule_value: '60000', // 1 minute
+      context_mode: 'isolated' as const,
+      next_run: anchorTime.toISOString(),
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2025-12-31T23:00:00.000Z',
     };
 
     const nextRun = computeNextRun(task);
     expect(nextRun).not.toBeNull();
-    // Must be in the future
-    expect(new Date(nextRun!).getTime()).toBeGreaterThan(Date.now());
-    // Must be aligned to the original schedule grid
-    const offset =
-      (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
-    expect(offset).toBe(0);
+    // Next aligned minute strictly after now (5m30s after anchor) is at 6 minutes.
+    expect(new Date(nextRun!).toISOString()).toBe(
+      new Date('2026-01-01T00:06:00.000Z').toISOString(),
+    );
+  });
+
+  it('computeNextRun preserves future next_run for interval tasks', () => {
+    const now = new Date('2026-01-01T00:05:00.000Z');
+    vi.setSystemTime(now);
+
+    const futureNextRun = new Date('2026-01-01T00:10:00.000Z').toISOString();
+    const task = {
+      id: 'future-alignment-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test future alignment',
+      schedule_type: 'interval' as const,
+      schedule_value: '60000',
+      context_mode: 'isolated' as const,
+      next_run: futureNextRun,
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2025-12-31T23:00:00.000Z',
+    };
+
+    const nextRun = computeNextRun(task);
+    expect(nextRun).toBe(futureNextRun);
   });
 });

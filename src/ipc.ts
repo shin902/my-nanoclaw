@@ -5,152 +5,52 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import {
+  deleteTask,
+  getTaskById,
+  loadGroupConfig,
+  saveGroupConfig,
+  updateTask,
+  upsertTask,
+} from './store.js';
+import { ScheduledTask } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
-  registeredGroups: () => Record<string, RegisteredGroup>;
-  registerGroup: (jid: string, group: RegisteredGroup) => void;
-  syncGroups: (force: boolean) => Promise<void>;
   getAvailableGroups: () => AvailableGroup[];
   writeGroupsSnapshot: (
     groupFolder: string,
-    isMain: boolean,
     availableGroups: AvailableGroup[],
-    registeredJids: Set<string>,
   ) => void;
 }
 
 let ipcWatcherRunning = false;
 
-export function startIpcWatcher(deps: IpcDeps): void {
-  if (ipcWatcherRunning) {
-    logger.debug('IPC watcher already running, skipping duplicate start');
-    return;
+function computeNextRun(
+  scheduleType: 'cron' | 'interval' | 'once',
+  scheduleValue: string,
+): string | null {
+  if (scheduleType === 'cron') {
+    const interval = CronExpressionParser.parse(scheduleValue, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
   }
-  ipcWatcherRunning = true;
 
-  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcBaseDir, { recursive: true });
-
-  const processIpcFiles = async () => {
-    // すべてのグループの IPC ディレクトリをスキャン（ディレクトリ名で識別）
-    let groupFolders: string[];
-    try {
-      groupFolders = fs.readdirSync(ipcBaseDir).filter((f) => {
-        const stat = fs.statSync(path.join(ipcBaseDir, f));
-        return stat.isDirectory() && f !== 'errors';
-      });
-    } catch (err) {
-      logger.error({ err }, 'Error reading IPC base directory');
-      setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
-      return;
+  if (scheduleType === 'interval') {
+    const ms = parseInt(scheduleValue, 10);
+    if (Number.isNaN(ms) || ms <= 0) {
+      throw new Error(`Invalid interval: ${scheduleValue}`);
     }
+    return new Date(Date.now() + ms).toISOString();
+  }
 
-    const registeredGroups = deps.registeredGroups();
-
-    // 登録済みグループから folder→isMain のルックアップを構築
-    const folderIsMain = new Map<string, boolean>();
-    for (const group of Object.values(registeredGroups)) {
-      if (group.isMain) folderIsMain.set(group.folder, true);
-    }
-
-    for (const sourceGroup of groupFolders) {
-      const isMain = folderIsMain.get(sourceGroup) === true;
-      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
-
-      // このグループの IPC ディレクトリからメッセージを処理
-      try {
-        if (fs.existsSync(messagesDir)) {
-          const messageFiles = fs
-            .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of messageFiles) {
-            const filePath = path.join(messagesDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
-                // 認可: このグループが対象の chatJid に送信可能か確認
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
-                }
-              }
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC message',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error(
-          { err, sourceGroup },
-          'Error reading IPC messages directory',
-        );
-      }
-
-      // このグループの IPC ディレクトリからタスクを処理
-      try {
-        if (fs.existsSync(tasksDir)) {
-          const taskFiles = fs
-            .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of taskFiles) {
-            const filePath = path.join(tasksDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              // 認可のため送信元グループの識別情報を processTaskIpc に渡す
-              await processTaskIpc(data, sourceGroup, isMain, deps);
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC task',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
-      }
-    }
-
-    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
-  };
-
-  processIpcFiles();
-  logger.info('IPC watcher started (per-group namespaces)');
+  const at = new Date(scheduleValue);
+  if (Number.isNaN(at.getTime())) {
+    throw new Error(`Invalid timestamp: ${scheduleValue}`);
+  }
+  return at.toISOString();
 }
 
 export async function processTaskIpc(
@@ -164,292 +64,262 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
-    // register_group 用
-    jid?: string;
-    name?: string;
-    folder?: string;
-    trigger?: string;
-    requiresTrigger?: boolean;
-    containerConfig?: RegisteredGroup['containerConfig'];
+    text?: string;
+    model?: string;
+    sessionId?: string | null;
+    resumeAt?: string | null;
   },
-  sourceGroup: string, // IPC ディレクトリから検証された識別情報
-  isMain: boolean, // ディレクトリパスから検証された情報
+  sourceGroup: string,
   deps: IpcDeps,
 ): Promise<void> {
-  const registeredGroups = deps.registeredGroups();
-
   switch (data.type) {
+    case 'send_message':
+      if (data.chatJid && data.text) {
+        if (data.chatJid !== sourceGroup) {
+          logger.warn(
+            `Unauthorized send_message attempt from group "${sourceGroup}" to "${data.chatJid}"`,
+          );
+          break;
+        }
+        await deps.sendMessage(data.chatJid, data.text);
+      }
+      break;
+
+    case 'update_config':
+      if (!data.groupFolder) break;
+      const config = loadGroupConfig(data.groupFolder);
+      if (!config) break;
+      saveGroupConfig(data.groupFolder, {
+        ...config,
+        model: data.model ?? config.model,
+        sessionId:
+          data.sessionId === null
+            ? undefined
+            : (data.sessionId ?? config.sessionId),
+        resumeAt:
+          data.resumeAt === null
+            ? undefined
+            : (data.resumeAt ?? config.resumeAt),
+      });
+      deps.writeGroupsSnapshot(sourceGroup, deps.getAvailableGroups());
+      break;
+
     case 'schedule_task':
       if (
         data.prompt &&
         data.schedule_type &&
         data.schedule_value &&
-        data.targetJid
+        data.targetJid &&
+        data.groupFolder
       ) {
-        // JID からターゲットグループを解決
-        const targetJid = data.targetJid as string;
-        const targetGroupEntry = registeredGroups[targetJid];
-
-        if (!targetGroupEntry) {
-          logger.warn(
-            { targetJid },
-            'Cannot schedule task: target group not registered',
-          );
-          break;
-        }
-
-        const targetFolder = targetGroupEntry.folder;
-
-        // 認可: メイン以外のグループは自分自身に対してのみスケジュール可能
-        if (!isMain && targetFolder !== sourceGroup) {
-          logger.warn(
-            { sourceGroup, targetFolder },
-            'Unauthorized schedule_task attempt blocked',
-          );
-          break;
-        }
-
-        const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
-
-        let nextRun: string | null = null;
-        if (scheduleType === 'cron') {
-          try {
-            const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
-            });
-            nextRun = interval.next().toISOString();
-          } catch {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid cron expression',
-            );
-            break;
-          }
-        } else if (scheduleType === 'interval') {
-          const ms = parseInt(data.schedule_value, 10);
-          if (isNaN(ms) || ms <= 0) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid interval',
-            );
-            break;
-          }
-          nextRun = new Date(Date.now() + ms).toISOString();
-        } else if (scheduleType === 'once') {
-          const date = new Date(data.schedule_value);
-          if (isNaN(date.getTime())) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid timestamp',
-            );
-            break;
-          }
-          nextRun = date.toISOString();
-        }
-
-        const taskId =
-          data.taskId ||
-          `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const contextMode =
-          data.context_mode === 'group' || data.context_mode === 'isolated'
-            ? data.context_mode
-            : 'isolated';
-        createTask({
-          id: taskId,
-          group_folder: targetFolder,
-          chat_jid: targetJid,
+        const task: ScheduledTask = {
+          id:
+            data.taskId ||
+            `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          group_folder: data.groupFolder,
+          chat_jid: data.targetJid,
           prompt: data.prompt,
-          schedule_type: scheduleType,
+          schedule_type: data.schedule_type as 'cron' | 'interval' | 'once',
           schedule_value: data.schedule_value,
-          context_mode: contextMode,
-          next_run: nextRun,
+          context_mode: data.context_mode === 'group' ? 'group' : 'isolated',
+          next_run: computeNextRun(
+            data.schedule_type as 'cron' | 'interval' | 'once',
+            data.schedule_value,
+          ),
+          last_run: null,
+          last_result: null,
           status: 'active',
           created_at: new Date().toISOString(),
-        });
-        logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
-          'Task created via IPC',
-        );
+        };
+        upsertTask(task);
       }
       break;
 
     case 'pause_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'paused' });
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task paused via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task pause attempt',
-          );
-        }
-      }
+      if (data.taskId) updateTask(data.taskId, { status: 'paused' });
       break;
 
     case 'resume_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'active' });
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task resumed via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task resume attempt',
-          );
-        }
-      }
+      if (data.taskId) updateTask(data.taskId, { status: 'active' });
       break;
 
     case 'cancel_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          deleteTask(data.taskId);
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task cancelled via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task cancel attempt',
-          );
-        }
-      }
+      if (data.taskId) deleteTask(data.taskId);
       break;
 
     case 'update_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (!task) {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Task not found for update',
-          );
-          break;
-        }
-        if (!isMain && task.group_folder !== sourceGroup) {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task update attempt',
-          );
-          break;
+        if (!task) break;
+
+        const nextScheduleType =
+          (data.schedule_type as ScheduledTask['schedule_type'] | undefined) ||
+          task.schedule_type;
+        const nextScheduleValue = data.schedule_value || task.schedule_value;
+
+        const updates: Partial<ScheduledTask> = {};
+
+        if (typeof data.prompt === 'string') {
+          updates.prompt = data.prompt;
         }
 
-        const updates: Parameters<typeof updateTask>[1] = {};
-        if (data.prompt !== undefined) updates.prompt = data.prompt;
-        if (data.schedule_type !== undefined)
-          updates.schedule_type = data.schedule_type as
-            | 'cron'
-            | 'interval'
-            | 'once';
-        if (data.schedule_value !== undefined)
+        if (data.schedule_type) {
+          updates.schedule_type =
+            data.schedule_type as ScheduledTask['schedule_type'];
+        }
+
+        if (data.schedule_value) {
           updates.schedule_value = data.schedule_value;
+        }
 
-        // スケジュールが変更された場合は next_run を再計算
+        if (data.context_mode === 'group' || data.context_mode === 'isolated') {
+          updates.context_mode = data.context_mode;
+        }
+
         if (data.schedule_type || data.schedule_value) {
-          const updatedTask = {
-            ...task,
-            ...updates,
-          };
-          if (updatedTask.schedule_type === 'cron') {
-            try {
-              const interval = CronExpressionParser.parse(
-                updatedTask.schedule_value,
-                { tz: TIMEZONE },
-              );
-              updates.next_run = interval.next().toISOString();
-            } catch {
-              logger.warn(
-                { taskId: data.taskId, value: updatedTask.schedule_value },
-                'Invalid cron in task update',
-              );
-              break;
-            }
-          } else if (updatedTask.schedule_type === 'interval') {
-            const ms = parseInt(updatedTask.schedule_value, 10);
-            if (!isNaN(ms) && ms > 0) {
-              updates.next_run = new Date(Date.now() + ms).toISOString();
-            }
-          }
+          updates.next_run = computeNextRun(
+            nextScheduleType,
+            nextScheduleValue,
+          );
         }
 
         updateTask(data.taskId, updates);
-        logger.info(
-          { taskId: data.taskId, sourceGroup, updates },
-          'Task updated via IPC',
-        );
-      }
-      break;
-
-    case 'refresh_groups':
-      // メイングループのみがリフレッシュを要求可能
-      if (isMain) {
-        logger.info(
-          { sourceGroup },
-          'Group metadata refresh requested via IPC',
-        );
-        await deps.syncGroups(true);
-        // 更新されたスナップショットを即座に書き出し
-        const availableGroups = deps.getAvailableGroups();
-        deps.writeGroupsSnapshot(
-          sourceGroup,
-          true,
-          availableGroups,
-          new Set(Object.keys(registeredGroups)),
-        );
-      } else {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized refresh_groups attempt blocked',
-        );
-      }
-      break;
-
-    case 'register_group':
-      // メイングループのみが新しいグループを登録可能
-      if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized register_group attempt blocked',
-        );
-        break;
-      }
-      if (data.jid && data.name && data.folder && data.trigger) {
-        if (!isValidGroupFolder(data.folder)) {
-          logger.warn(
-            { sourceGroup, folder: data.folder },
-            'Invalid register_group request - unsafe folder name',
-          );
-          break;
-        }
-        // 多層防御: エージェントは IPC 経由で isMain を設定できない
-        deps.registerGroup(data.jid, {
-          name: data.name,
-          folder: data.folder,
-          trigger: data.trigger,
-          added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig,
-          requiresTrigger: data.requiresTrigger,
-        });
-      } else {
-        logger.warn(
-          { data },
-          'Invalid register_group request - missing required fields',
-        );
       }
       break;
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
+}
+
+export function startIpcWatcher(deps: IpcDeps): void {
+  if (ipcWatcherRunning) {
+    logger.debug('IPC watcher already running, skipping duplicate start');
+    return;
+  }
+  ipcWatcherRunning = true;
+
+  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+  fs.mkdirSync(ipcBaseDir, { recursive: true });
+
+  const processIpcFiles = async () => {
+    const groupFolders = fs.existsSync(ipcBaseDir)
+      ? fs
+          .readdirSync(ipcBaseDir)
+          .filter((entry) =>
+            fs.statSync(path.join(ipcBaseDir, entry)).isDirectory(),
+          )
+      : [];
+
+    for (const sourceGroup of groupFolders) {
+      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
+      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+
+      for (const dirPath of [messagesDir, tasksDir]) {
+        if (!fs.existsSync(dirPath)) continue;
+
+        for (const file of fs
+          .readdirSync(dirPath)
+          .filter((name) => name.endsWith('.json'))) {
+          const filePath = path.join(dirPath, file);
+          try {
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            if (
+              dirPath === messagesDir &&
+              data.type === 'message' &&
+              data.chatJid &&
+              data.text
+            ) {
+              await deps.sendMessage(data.chatJid, data.text);
+            } else {
+              await processTaskIpc(data, sourceGroup, deps);
+            }
+            fs.unlinkSync(filePath);
+          } catch (err) {
+            logger.error({ filePath, err }, 'Error processing IPC file');
+            try {
+              const errorsDir = path.join(dirPath, 'errors');
+              fs.mkdirSync(errorsDir, { recursive: true });
+              const errorPath = path.join(errorsDir, file);
+              fs.renameSync(filePath, errorPath);
+              logger.info(
+                { filePath, errorPath },
+                'Moved failed IPC file to errors directory',
+              );
+            } catch (moveErr) {
+              logger.error(
+                { filePath, moveErr },
+                'Failed to move bad IPC file, deleting instead',
+              );
+              try {
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                }
+              } catch (unlinkErr) {
+                logger.error(
+                  { filePath, unlinkErr },
+                  'Failed to delete bad IPC file after move failure',
+                );
+              }
+            }
+            try {
+              const errorsDir = path.join(dirPath, 'errors');
+              fs.mkdirSync(errorsDir, { recursive: true });
+              const errorPath = path.join(errorsDir, file);
+              fs.renameSync(filePath, errorPath);
+              logger.info(
+                { filePath, errorPath },
+                'Moved failed IPC file to errors directory',
+              );
+            } catch (moveErr) {
+              logger.error(
+                { filePath, moveErr },
+                'Failed to move bad IPC file, deleting instead',
+              );
+              try {
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                }
+              } catch (unlinkErr) {
+                logger.error(
+                  { filePath, unlinkErr },
+                  'Failed to delete bad IPC file after move failure',
+                );
+              }
+            }
+            try {
+              const errorsDir = path.join(dirPath, 'errors');
+              fs.mkdirSync(errorsDir, { recursive: true });
+              const errorPath = path.join(errorsDir, file);
+              fs.renameSync(filePath, errorPath);
+              logger.info(
+                { filePath, errorPath },
+                'Moved failed IPC file to errors directory',
+              );
+            } catch (moveErr) {
+              logger.error(
+                { filePath, moveErr },
+                'Failed to move bad IPC file, deleting instead',
+              );
+              try {
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                }
+              } catch (unlinkErr) {
+                logger.error(
+                  { filePath, unlinkErr },
+                  'Failed to delete bad IPC file after move failure',
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
+    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+  };
+
+  processIpcFiles();
+  logger.info('IPC watcher started');
 }

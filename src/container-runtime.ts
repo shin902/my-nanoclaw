@@ -1,8 +1,3 @@
-/**
- * NanoClaw 用コンテナランタイム抽象化。
- * ランタイム固有のロジックはすべてここに集約されているため、
- * ランタイムを変更する場合はこのファイルのみを修正します。
- */
 import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -15,35 +10,27 @@ export const CONTAINER_RUNTIME_BIN = 'docker';
 /** コンテナがホストマシンに到達するために使用するホスト名。 */
 export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
 
-/**
- * 認証情報プロキシがバインドするアドレス。
- * Docker Desktop (macOS): 127.0.0.1 — VM が host.docker.internal をループバックにルーティングします。
- * Docker (Linux): コンテナのみが到達できるよう docker0 ブリッジ IP にバインドし、
- *   インターフェースが見つからない場合は 0.0.0.0 にフォールバックします。
- */
 export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
   if (os.platform() === 'darwin') return '127.0.0.1';
 
-  // WSL は Docker Desktop を使用しており、macOS と同じ VM ルーティングであるため、ループバックで正解。
-  // 環境変数ではなく /proc ファイルシステムを確認します — WSL_DISTRO_NAME は systemd 下では設定されないため。
+  // WSL は Docker Desktop を使うため、macOS と同じく loopback を使う。
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // ベアメタル Linux: 0.0.0.0 ではなく docker0 ブリッジ IP にバインド
   const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
-    const ipv4 = docker0.find((a) => a.family === 'IPv4');
+    const ipv4 = docker0.find((addr) => addr.family === 'IPv4');
     if (ipv4) return ipv4.address;
   }
+
   return '0.0.0.0';
 }
 
 /** コンテナがホストゲートウェイを解決するために必要な CLI 引数。 */
 export function hostGatewayArgs(): string[] {
-  // Linux では host.docker.internal は組み込まれていないため、明示的に追加
   if (os.platform() === 'linux') {
     return ['--add-host=host.docker.internal:host-gateway'];
   }

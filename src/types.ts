@@ -42,6 +42,18 @@ export interface RegisteredGroup {
   isMain?: boolean; // メインコントロールグループの場合は true（トリガー不要、特権あり）
 }
 
+export interface StoredGroupConfig {
+  jid: string;
+  name: string;
+  folder: string;
+  model: string;
+  provider: string;
+  sessionId?: string;
+  resumeAt?: string;
+  added_at: string;
+  containerConfig?: ContainerConfig;
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;
@@ -75,6 +87,11 @@ export interface TaskRunLog {
   status: 'success' | 'error';
   result: string | null;
   error: string | null;
+}
+
+export interface GroupEvent extends NewMessage {
+  type?: 'message' | 'summary';
+  summary?: string;
 }
 
 // --- チャネルの抽象化 ---

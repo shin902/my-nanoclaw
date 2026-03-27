@@ -12,7 +12,6 @@ import {
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
-  GROUPS_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
@@ -26,7 +25,6 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 // 堅牢な出力パースのためのセンチネルマーカー (agent-runner と一致させる必要があります)
@@ -38,7 +36,7 @@ export interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
-  isMain: boolean;
+  model: string;
   isScheduledTask?: boolean;
   assistantName?: string;
 }
@@ -56,63 +54,15 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(
-  group: RegisteredGroup,
-  isMain: boolean,
-): VolumeMount[] {
+function buildVolumeMounts(group: RegisteredGroup): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
-
-  if (isMain) {
-    // メイングループにはプロジェクトルートを読み取り専用でマウントします。
-    // エージェントが必要とする書き込み可能なパス（グループフォルダ、IPC、.claude/）は、
-    // 以下で個別にマウントされます。読み取り専用にすることで、エージェントが
-    // ホスト上のアプリケーションコード（src/, dist/, package.json など）を
-    // 修正し、次回の起動時にサンドボックスを完全に回避するのを防ぎます。
-    mounts.push({
-      hostPath: projectRoot,
-      containerPath: '/workspace/project',
-      readonly: true,
-    });
-
-    // エージェントがマウントされたプロジェクトルートからシークレットを読み取れないように
-    // .env を隠します。認証情報は認証情報プロキシによって注入され、
-    // コンテナに直接さらされることはありません。
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
-
-    // メイングループは、自身のグループフォルダを作業ディレクトリとしても取得します
-    mounts.push({
-      hostPath: groupDir,
-      containerPath: '/workspace/group',
-      readonly: false,
-    });
-  } else {
-    // その他のグループは、自身のフォルダのみを取得します
-    mounts.push({
-      hostPath: groupDir,
-      containerPath: '/workspace/group',
-      readonly: false,
-    });
-
-    // グローバルメモリディレクトリ（メイン以外には読み取り専用）
-    // ディレクトリマウントのみがサポートされており、ファイルマウントはサポートされていません
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
-  }
+  mounts.push({
+    hostPath: groupDir,
+    containerPath: '/workspace/group',
+    readonly: false,
+  });
 
   // グループごとの Claude セッションディレクトリ（他のグループから隔離）
   // グループ間のセッションアクセスを防ぐため、各グループは独自の .claude/ を持ちます
@@ -122,30 +72,8 @@ function buildVolumeMounts(
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // エージェントスウォーム（サブエージェントのオーケストレーション）を有効にする
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // 追加マウントされたディレクトリから CLAUDE.md を読み込む
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Claude のメモリ機能を有効にする（セッション間でユーザー設定を永続化）
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
+  const projectsDir = path.join(groupSessionsDir, 'projects');
+  fs.mkdirSync(projectsDir, { recursive: true });
 
   // container/skills/ から各グループ의 .claude/skills/ にスキルを同期
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
@@ -159,8 +87,13 @@ function buildVolumeMounts(
     }
   }
   mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    hostPath: projectsDir,
+    containerPath: '/home/node/.claude/projects',
+    readonly: false,
+  });
+  mounts.push({
+    hostPath: skillsDst,
+    containerPath: '/home/node/.claude/skills',
     readonly: false,
   });
 
@@ -200,16 +133,6 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // 外部許可リスト（コンテナから改ざん不能）に対して検証された追加マウント
-  if (group.containerConfig?.additionalMounts) {
-    const validatedMounts = validateAdditionalMounts(
-      group.containerConfig.additionalMounts,
-      group.name,
-      isMain,
-    );
-    mounts.push(...validatedMounts);
-  }
-
   return mounts;
 }
 
@@ -241,6 +164,14 @@ function buildContainerArgs(
 
   // ホストゲートウェイ解決のためのランタイム固有の引数
   args.push(...hostGatewayArgs());
+
+  // SSH Agent Forwarding: コンテナ内の Git コマンドがホストの SSH キーにアクセス可能にする
+  // (秘密鍵ファイル自体はコンテナから見えず、ホスト側の ssh-agent 経由でのみアクセス)
+  const sshAuthSock = process.env.SSH_AUTH_SOCK;
+  if (sshAuthSock) {
+    args.push('-v', `${sshAuthSock}:${sshAuthSock}`);
+    args.push('-e', `SSH_AUTH_SOCK=${sshAuthSock}`);
+  }
 
   // バインドマウントされたファイルにアクセスできるよう、ホストユーザーとして実行。
   // root (uid 0)、コンテナの node ユーザー (uid 1000)、または
@@ -276,7 +207,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -299,7 +230,7 @@ export async function runContainerAgent(
       group: group.name,
       containerName,
       mountCount: mounts.length,
-      isMain: input.isMain,
+      model: input.model,
     },
     'Spawning container agent',
   );
@@ -493,7 +424,7 @@ export async function runContainerAgent(
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
         `Group: ${group.name}`,
-        `IsMain: ${input.isMain}`,
+        `Model: ${input.model}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
         `Stdout Truncated: ${stdoutTruncated}`,
@@ -645,7 +576,6 @@ export async function runContainerAgent(
 
 export function writeTasksSnapshot(
   groupFolder: string,
-  isMain: boolean,
   tasks: Array<{
     id: string;
     groupFolder: string;
@@ -660,13 +590,15 @@ export function writeTasksSnapshot(
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
-  // メイングループはすべてのタスクを表示でき、他は自身のタスクのみを表示できる
-  const filteredTasks = isMain
-    ? tasks
-    : tasks.filter((t) => t.groupFolder === groupFolder);
-
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
-  fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
+  fs.writeFileSync(
+    tasksFile,
+    JSON.stringify(
+      tasks.filter((task) => task.groupFolder === groupFolder),
+      null,
+      2,
+    ),
+  );
 }
 
 export interface AvailableGroup {
@@ -683,22 +615,17 @@ export interface AvailableGroup {
  */
 export function writeGroupsSnapshot(
   groupFolder: string,
-  isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
-
-  // メイングループはすべてのグループを表示でき、他は何も表示できない（グループをアクティブ化できないため）
-  const visibleGroups = isMain ? groups : [];
 
   const groupsFile = path.join(groupIpcDir, 'available_groups.json');
   fs.writeFileSync(
     groupsFile,
     JSON.stringify(
       {
-        groups: visibleGroups,
+        groups,
         lastSync: new Date().toISOString(),
       },
       null,
