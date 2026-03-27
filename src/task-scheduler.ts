@@ -81,6 +81,7 @@ async function runTask(
       { taskId: task.id, chatId: task.chat_id },
       'Session not found for task',
     );
+    updateTask(task.id, { status: 'paused' });
     appendTaskLog({
       task_id: task.id,
       run_at: new Date().toISOString(),
