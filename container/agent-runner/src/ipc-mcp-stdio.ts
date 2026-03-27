@@ -10,6 +10,7 @@ const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 
 const chatId = process.env.NANOCLAW_CHAT_ID!;
+const CHAT_MESSAGES_DIR = path.join(MESSAGES_DIR, encodeURIComponent(chatId));
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -36,7 +37,7 @@ server.tool(
     sender: z.string().optional().describe('送信者名。現状は互換用です。'),
   },
   async (args) => {
-    writeIpcFile(MESSAGES_DIR, {
+    writeIpcFile(CHAT_MESSAGES_DIR, {
       type: 'message',
       chatId,
       text: args.text,

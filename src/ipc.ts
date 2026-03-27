@@ -24,6 +24,15 @@ export interface IpcDeps {
 
 let ipcWatcherRunning = false;
 
+function decodeChatNamespace(namespace: string): string | null {
+  try {
+    const chatId = decodeURIComponent(namespace);
+    return chatId || null;
+  } catch {
+    return null;
+  }
+}
+
 function computeNextRun(
   scheduleType: 'cron' | 'interval' | 'once',
   scheduleValue: string,
@@ -69,6 +78,14 @@ export async function processTaskIpc(
   switch (data.type) {
     case 'send_message':
       if (data.chatId && data.text) {
+        const session = getSession(data.chatId);
+        if (!session) {
+          logger.warn(
+            { chatId: data.chatId },
+            'Ignoring IPC send_message for unknown chat',
+          );
+          break;
+        }
         await deps.sendMessage(data.chatId, data.text);
       }
       break;
@@ -193,30 +210,82 @@ export function startIpcWatcher(deps: IpcDeps): void {
   fs.mkdirSync(tasksDir, { recursive: true });
 
   const processIpcFiles = async () => {
-    for (const dirPath of [messagesDir, tasksDir]) {
-      if (!fs.existsSync(dirPath)) continue;
+    if (fs.existsSync(messagesDir)) {
+      for (const namespace of fs.readdirSync(messagesDir)) {
+        const namespaceDir = path.join(messagesDir, namespace);
+        if (!fs.statSync(namespaceDir).isDirectory()) continue;
 
+        const trustedChatId = decodeChatNamespace(namespace);
+        if (!trustedChatId) {
+          logger.warn({ namespace }, 'Skipping invalid IPC message namespace');
+          continue;
+        }
+
+        for (const file of fs
+          .readdirSync(namespaceDir)
+          .filter((name) => name.endsWith('.json'))) {
+          const filePath = path.join(namespaceDir, file);
+          try {
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            if (data.type === 'message' && data.text) {
+              const session = getSession(trustedChatId);
+              if (!session) {
+                logger.warn(
+                  { chatId: trustedChatId, filePath },
+                  'Ignoring IPC message for unknown chat',
+                );
+              } else {
+                await deps.sendMessage(trustedChatId, data.text);
+              }
+            } else {
+              await processTaskIpc(data, deps);
+            }
+            fs.unlinkSync(filePath);
+          } catch (err) {
+            logger.error({ filePath, err }, 'Error processing IPC file');
+            try {
+              const errorsDir = path.join(namespaceDir, 'errors');
+              fs.mkdirSync(errorsDir, { recursive: true });
+              const errorPath = path.join(errorsDir, file);
+              fs.renameSync(filePath, errorPath);
+              logger.info(
+                { filePath, errorPath },
+                'Moved failed IPC file to errors directory',
+              );
+            } catch (moveErr) {
+              logger.error(
+                { filePath, moveErr },
+                'Failed to move bad IPC file, deleting instead',
+              );
+              try {
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                }
+              } catch (unlinkErr) {
+                logger.error(
+                  { filePath, unlinkErr },
+                  'Failed to delete bad IPC file after move failure',
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (fs.existsSync(tasksDir)) {
       for (const file of fs
-        .readdirSync(dirPath)
+        .readdirSync(tasksDir)
         .filter((name) => name.endsWith('.json'))) {
-        const filePath = path.join(dirPath, file);
+        const filePath = path.join(tasksDir, file);
         try {
           const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          if (
-            dirPath === messagesDir &&
-            data.type === 'message' &&
-            data.chatId &&
-            data.text
-          ) {
-            await deps.sendMessage(data.chatId, data.text);
-          } else {
-            await processTaskIpc(data, deps);
-          }
+          await processTaskIpc(data, deps);
           fs.unlinkSync(filePath);
         } catch (err) {
           logger.error({ filePath, err }, 'Error processing IPC file');
           try {
-            const errorsDir = path.join(dirPath, 'errors');
+            const errorsDir = path.join(tasksDir, 'errors');
             fs.mkdirSync(errorsDir, { recursive: true });
             const errorPath = path.join(errorsDir, file);
             fs.renameSync(filePath, errorPath);
