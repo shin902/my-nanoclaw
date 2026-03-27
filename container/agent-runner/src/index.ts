@@ -4,9 +4,9 @@
  *
  * 入力プロトコル:
  *   標準入力: ContainerInput JSON 全体（EOF まで読み込み）
- *   IPC:     追撃メッセージ。/workspace/ipc/input/ に JSON ファイルとして書き込まれる。
+ *   IPC:     追撃メッセージ。/workspace/ipc/input/{safeChatId}/ に JSON ファイルとして書き込まれる。
  *            ファイル形式: {type:"message", text:"..."}.json — ポーリングして消費される。
- *            センチネル: /workspace/ipc/input/_close — セッション終了の合図。
+ *            センチネル: /workspace/ipc/input/{safeChatId}/_close — セッション終了の合図。
  *
  * 標準出力プロトコル:
  *   各結果は OUTPUT_START_MARKER / OUTPUT_END_MARKER のペアでラップされる。
@@ -52,9 +52,23 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const IPC_INPUT_DIR = '/workspace/ipc/input';
-const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+
+function safeChatId(chatId: string): string {
+  const trimmed = chatId.trim();
+  if (!trimmed) {
+    return 'chat';
+  }
+  return encodeURIComponent(trimmed);
+}
+
+function getIpcInputDir(chatId: string): string {
+  return path.join('/workspace/ipc/input', safeChatId(chatId));
+}
+
+function getIpcInputCloseSentinel(chatId: string): string {
+  return path.join(getIpcInputDir(chatId), '_close');
+}
 
 /**
  * SDK にユーザーメッセージをストリーミングするためのプッシュベースの非同期イテラブル。
@@ -259,9 +273,10 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 /**
  * _close センチネルを確認します。
  */
-function shouldClose(): boolean {
-  if (fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) {
-    try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* 無視 */ }
+function shouldClose(chatId: string): boolean {
+  const closeSentinel = getIpcInputCloseSentinel(chatId);
+  if (fs.existsSync(closeSentinel)) {
+    try { fs.unlinkSync(closeSentinel); } catch { /* 無視 */ }
     return true;
   }
   return false;
@@ -271,16 +286,17 @@ function shouldClose(): boolean {
  * 保留中のすべての IPC 入力メッセージを吸い出します。
  * 見つかったメッセージの配列、または空の配列を返します。
  */
-function drainIpcInput(): string[] {
+function drainIpcInput(chatId: string): string[] {
+  const inputDir = getIpcInputDir(chatId);
   try {
-    fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
-    const files = fs.readdirSync(IPC_INPUT_DIR)
+    fs.mkdirSync(inputDir, { recursive: true });
+    const files = fs.readdirSync(inputDir)
       .filter(f => f.endsWith('.json'))
       .sort();
 
     const messages: string[] = [];
     for (const file of files) {
-      const filePath = path.join(IPC_INPUT_DIR, file);
+      const filePath = path.join(inputDir, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
@@ -303,14 +319,14 @@ function drainIpcInput(): string[] {
  * 新しい IPC メッセージまたは _close センチネルを待ちます。
  * メッセージを単一の文字列として返します。_close の場合は null を返します。
  */
-function waitForIpcMessage(): Promise<string | null> {
+function waitForIpcMessage(chatId: string): Promise<string | null> {
   return new Promise((resolve) => {
     const poll = () => {
-      if (shouldClose()) {
+      if (shouldClose(chatId)) {
         resolve(null);
         return;
       }
-      const messages = drainIpcInput();
+      const messages = drainIpcInput(chatId);
       if (messages.length > 0) {
         resolve(messages.join('\n'));
         return;
@@ -335,7 +351,7 @@ async function runQuery(
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
-  const stream = new MessageStream();
+const stream = new MessageStream();
   stream.push(prompt);
 
   // クエリ実行中に追撃メッセージと _close センチネルを求めて IPC をポーリング
@@ -343,14 +359,14 @@ async function runQuery(
   let closedDuringQuery = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
-    if (shouldClose()) {
+    if (shouldClose(containerInput.chatId)) {
       log('クエリ実行中にクローズセンチネルを検出しました。ストリームを終了します');
       closedDuringQuery = true;
       stream.end();
       ipcPolling = false;
       return;
     }
-    const messages = drainIpcInput();
+    const messages = drainIpcInput(containerInput.chatId);
     for (const text of messages) {
       log(`実行中のクエリに IPC メッセージをパイプ中 (${text.length} 文字)`);
       stream.push(text);
@@ -475,17 +491,18 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
-  fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
+  const ipcInputDir = getIpcInputDir(containerInput.chatId);
+  fs.mkdirSync(ipcInputDir, { recursive: true });
 
   // 以前のコンテナ実行から残っている古い _close センチネルをクリーンアップ
-  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* 無視 */ }
+  try { fs.unlinkSync(getIpcInputCloseSentinel(containerInput.chatId)); } catch { /* 無視 */ }
 
   // 初期プロンプトを構築（保留中の IPC メッセージも吸い出す）
   let prompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
     prompt = `[定期実行タスク - 以下のメッセージは自動送信であり、ユーザーやチャットから直接送信されたものではありません。]\n\n${prompt}`;
   }
-  const pending = drainIpcInput();
+  const pending = drainIpcInput(containerInput.chatId);
   if (pending.length > 0) {
     log(`${pending.length} 件の保留中 IPC メッセージを初期プロンプトに統合します`);
     prompt += '\n' + pending.join('\n');
@@ -519,7 +536,7 @@ async function main(): Promise<void> {
       log('クエリが終了しました。次の IPC メッセージを待機中...');
 
       // 次のメッセージまたは _close センチネルを待機
-      const nextMessage = await waitForIpcMessage();
+      const nextMessage = await waitForIpcMessage(containerInput.chatId);
       if (nextMessage === null) {
         log('クローズセンチネルを受信しました。終了します');
         break;

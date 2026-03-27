@@ -96,13 +96,11 @@ function chatEventsPath(chatId: string, date: string): string {
 }
 
 export function safeChatId(chatId: string): string {
-  const safe = chatId
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  return safe || 'chat';
+  const trimmed = chatId.trim();
+  if (!trimmed) {
+    return 'chat';
+  }
+  return encodeURIComponent(trimmed);
 }
 
 export function loadSessions(): ChatSession[] {

@@ -4,6 +4,7 @@ import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
+import { safeChatId } from './store.js';
 
 interface QueuedTask {
   id: string;
@@ -158,7 +159,7 @@ export class GroupQueue {
     if (!state.active || state.isTaskContainer) return false;
     state.idleWaiting = false; // エージェントが作業を受け取ろうとしているため、アイドル状態ではなくなる
 
-    const inputDir = path.join(DATA_DIR, 'ipc', 'input');
+    const inputDir = path.join(DATA_DIR, 'ipc', 'input', safeChatId(chatId));
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
@@ -182,7 +183,7 @@ export class GroupQueue {
     const state = this.getGroup(chatId);
     if (!state.active) return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', 'input');
+    const inputDir = path.join(DATA_DIR, 'ipc', 'input', safeChatId(chatId));
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');

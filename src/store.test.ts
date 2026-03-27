@@ -55,7 +55,7 @@ describe('store', () => {
   });
 
   it('sanitizes chat ids for filesystem paths', () => {
-    expect(safeChatId('dc:123/abc')).toBe('dc-123-abc');
+    expect(safeChatId('dc:123/abc')).toBe('dc%3A123%2Fabc');
   });
 
   it('appends and reads events in chronological order for today', () => {
@@ -87,7 +87,7 @@ describe('store', () => {
   it('reads recent events across today and yesterday and applies limit', () => {
     vi.setSystemTime(new Date('2026-03-20T09:00:00.000Z'));
 
-    const chatDir = path.join(_internals.CHATS_DATA_DIR, 'dc-1');
+    const chatDir = path.join(_internals.CHATS_DATA_DIR, 'dc%3A1');
     writeJsonl(path.join(chatDir, '2026-03-19.jsonl'), [
       {
         id: 'a',
