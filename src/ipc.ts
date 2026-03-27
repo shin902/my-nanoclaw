@@ -59,7 +59,6 @@ export async function processTaskIpc(
     schedule_value?: string;
     context_mode?: string;
     chatId?: string;
-    targetChatId?: string;
     text?: string;
     model?: string;
     sessionId?: string | null;
@@ -96,16 +95,16 @@ export async function processTaskIpc(
 
     case 'schedule_task':
       if (
+        data.chatId &&
         data.prompt &&
         data.schedule_type &&
-        data.schedule_value &&
-        data.targetChatId
+        data.schedule_value
       ) {
         const task: ScheduledTask = {
           id:
             data.taskId ||
             `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          chat_id: data.targetChatId,
+          chat_id: data.chatId,
           prompt: data.prompt,
           schedule_type: data.schedule_type as 'cron' | 'interval' | 'once',
           schedule_value: data.schedule_value,

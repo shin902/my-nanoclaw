@@ -58,7 +58,6 @@ server.tool(
     schedule_type: z.enum(['cron', 'interval', 'once']),
     schedule_value: z.string(),
     context_mode: z.enum(['group', 'isolated']).default('group'),
-    target_chat_id: z.string().optional().describe('対象チャットID。省略時は現在のチャット。'),
   },
   async (args) => {
     if (args.schedule_type === 'cron') {
@@ -89,11 +88,11 @@ server.tool(
     writeIpcFile(TASKS_DIR, {
       type: 'schedule_task',
       taskId,
+      chatId,
       prompt: args.prompt,
       schedule_type: args.schedule_type,
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
-      targetChatId: args.target_chat_id || chatId,
       timestamp: new Date().toISOString(),
     });
 
