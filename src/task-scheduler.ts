@@ -70,7 +70,10 @@ async function runTask(
 ): Promise<void> {
   const startTime = Date.now();
 
-  logger.info({ taskId: task.id, chatId: task.chat_id }, 'Running scheduled task');
+  logger.info(
+    { taskId: task.id, chatId: task.chat_id },
+    'Running scheduled task',
+  );
 
   const session = getSession(task.chat_id);
   if (!session) {
@@ -129,7 +132,8 @@ async function runTask(
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => deps.onProcess(task.chat_id, proc, containerName),
+      (proc, containerName) =>
+        deps.onProcess(task.chat_id, proc, containerName),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;

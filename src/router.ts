@@ -39,9 +39,7 @@ export function routeOutbound(
   chatId: string,
   text: string,
 ): Promise<void> {
-  const channel = channels.find(
-    (c) => c.ownsChatId(chatId) && c.isConnected(),
-  );
+  const channel = channels.find((c) => c.ownsChatId(chatId) && c.isConnected());
   if (!channel) throw new Error(`No channel for chat ID: ${chatId}`);
   return channel.sendMessage(chatId, text);
 }

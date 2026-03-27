@@ -41,9 +41,7 @@ function loadChatSessions(): void {
 
 export function getAvailableChats(): import('./container-runner.js').AvailableChat[] {
   return Object.values(sessions)
-    .sort((a, b) =>
-      (a.name || a.chatId).localeCompare(b.name || b.chatId),
-    )
+    .sort((a, b) => (a.name || a.chatId).localeCompare(b.name || b.chatId))
     .map((session) => ({
       chatId: session.chatId,
       name: session.name || session.chatId,
@@ -52,9 +50,7 @@ export function getAvailableChats(): import('./container-runner.js').AvailableCh
     }));
 }
 
-export function _setSessions(
-  nextSessions: Record<string, ChatSession>,
-): void {
+export function _setSessions(nextSessions: Record<string, ChatSession>): void {
   sessions = nextSessions;
 }
 
@@ -93,7 +89,8 @@ async function runAgent(
         model: session.model || 'claude-sonnet-4-6',
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => queue.registerProcess(chatId, proc, containerName),
+      (proc, containerName) =>
+        queue.registerProcess(chatId, proc, containerName),
       async (streamed) => {
         if (streamed.newSessionId) {
           saveChatSession({

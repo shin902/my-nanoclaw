@@ -167,7 +167,9 @@ export class DiscordChannel implements Channel {
   async sendMessage(chatId: string, text: string): Promise<void> {
     if (!this.client) return;
 
-    const channel = await this.client.channels.fetch(chatId.replace(/^dc:/, ''));
+    const channel = await this.client.channels.fetch(
+      chatId.replace(/^dc:/, ''),
+    );
     if (!channel || !('send' in channel)) return;
 
     const textChannel = channel as TextChannel;

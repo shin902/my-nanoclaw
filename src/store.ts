@@ -133,8 +133,9 @@ export function appendEvent(chatId: string, event: GroupEvent): void {
 }
 
 export function readTodayEvents(chatId: string): GroupEvent[] {
-  return parseJsonlFile<GroupEvent>(chatEventsPath(chatId, isoDate(new Date())))
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return parseJsonlFile<GroupEvent>(
+    chatEventsPath(chatId, isoDate(new Date())),
+  ).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
 export function readRecentEvents(chatId: string, limit: number): GroupEvent[] {

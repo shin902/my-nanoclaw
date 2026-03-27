@@ -164,7 +164,10 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', chatId, text }));
+      fs.writeFileSync(
+        tempPath,
+        JSON.stringify({ type: 'message', chatId, text }),
+      );
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {
@@ -325,7 +328,10 @@ export class GroupQueue {
         );
       } else if (state.pendingMessages) {
         this.runForGroup(nextJid, 'drain').catch((err) =>
-          logger.error({ chatId: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
+          logger.error(
+            { chatId: nextJid, err },
+            'Unhandled error in runForGroup (waiting)',
+          ),
         );
       }
       // いずれも保留されていない場合は、このグループをスキップ

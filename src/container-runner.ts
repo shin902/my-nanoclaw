@@ -573,9 +573,7 @@ export interface AvailableChat {
  * メイングループのみが、すべての利用可能なグループを表示できます（アクティブ化のため）。
  * メイン以外のグループは、自身の登録ステータスのみを表示できます。
  */
-export function writeGroupsSnapshot(
-  chats: AvailableChat[],
-): void {
+export function writeGroupsSnapshot(chats: AvailableChat[]): void {
   const ipcDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcDir, { recursive: true });
   const groupsFile = path.join(ipcDir, 'available_groups.json');
