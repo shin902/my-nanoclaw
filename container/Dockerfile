@@ -49,7 +49,7 @@ COPY agent-runner/ ./
 RUN npm run build
 
 # Create workspace directories
-RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
+RUN mkdir -p /workspace /workspace/conversations /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
 # Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.
@@ -64,7 +64,7 @@ RUN chown -R node:node /workspace && chmod 777 /home/node
 USER node
 
 # Set working directory to group workspace
-WORKDIR /workspace/group
+WORKDIR /workspace
 
 # Entry point reads JSON from stdin, outputs JSON to stdout
 ENTRYPOINT ["/app/entrypoint.sh"]

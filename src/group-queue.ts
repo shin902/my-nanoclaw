@@ -7,7 +7,7 @@ import { logger } from './logger.js';
 
 interface QueuedTask {
   id: string;
-  groupJid: string;
+  chatId: string;
   fn: () => Promise<void>;
 }
 
@@ -23,7 +23,6 @@ interface GroupState {
   pendingTasks: QueuedTask[];
   process: ChildProcess | null;
   containerName: string | null;
-  groupFolder: string | null;
   retryCount: number;
 }
 
@@ -31,12 +30,12 @@ export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
   private waitingGroups: string[] = [];
-  private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
+  private processMessagesFn: ((chatId: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
 
-  private getGroup(groupJid: string): GroupState {
-    let state = this.groups.get(groupJid);
+  private getGroup(chatId: string): GroupState {
+    let state = this.groups.get(chatId);
     if (!state) {
       state = {
         active: false,
@@ -47,109 +46,106 @@ export class GroupQueue {
         pendingTasks: [],
         process: null,
         containerName: null,
-        groupFolder: null,
         retryCount: 0,
       };
-      this.groups.set(groupJid, state);
+      this.groups.set(chatId, state);
     }
     return state;
   }
 
-  setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
+  setProcessMessagesFn(fn: (chatId: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
   }
 
-  enqueueMessageCheck(groupJid: string): void {
+  enqueueMessageCheck(chatId: string): void {
     if (this.shuttingDown) return;
 
-    const state = this.getGroup(groupJid);
+    const state = this.getGroup(chatId);
 
     if (state.active) {
       state.pendingMessages = true;
-      logger.debug({ groupJid }, 'Container active, message queued');
+      logger.debug({ chatId }, 'Container active, message queued');
       return;
     }
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
       state.pendingMessages = true;
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
+      if (!this.waitingGroups.includes(chatId)) {
+        this.waitingGroups.push(chatId);
       }
       logger.debug(
-        { groupJid, activeCount: this.activeCount },
+        { chatId, activeCount: this.activeCount },
         'At concurrency limit, message queued',
       );
       return;
     }
 
-    this.runForGroup(groupJid, 'messages').catch((err) =>
-      logger.error({ groupJid, err }, 'Unhandled error in runForGroup'),
+    this.runForGroup(chatId, 'messages').catch((err) =>
+      logger.error({ chatId, err }, 'Unhandled error in runForGroup'),
     );
   }
 
-  enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {
+  enqueueTask(chatId: string, taskId: string, fn: () => Promise<void>): void {
     if (this.shuttingDown) return;
 
-    const state = this.getGroup(groupJid);
+    const state = this.getGroup(chatId);
 
     // 重複エンキューを防止: 実行中および保留中のタスクの両方を確認
     if (state.runningTaskId === taskId) {
-      logger.debug({ groupJid, taskId }, 'Task already running, skipping');
+      logger.debug({ chatId, taskId }, 'Task already running, skipping');
       return;
     }
     if (state.pendingTasks.some((t) => t.id === taskId)) {
-      logger.debug({ groupJid, taskId }, 'Task already queued, skipping');
+      logger.debug({ chatId, taskId }, 'Task already queued, skipping');
       return;
     }
 
     if (state.active) {
-      state.pendingTasks.push({ id: taskId, groupJid, fn });
+      state.pendingTasks.push({ id: taskId, chatId, fn });
       if (state.idleWaiting) {
-        this.closeStdin(groupJid);
+        this.closeStdin(chatId);
       }
-      logger.debug({ groupJid, taskId }, 'Container active, task queued');
+      logger.debug({ chatId, taskId }, 'Container active, task queued');
       return;
     }
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
-      state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
+      state.pendingTasks.push({ id: taskId, chatId, fn });
+      if (!this.waitingGroups.includes(chatId)) {
+        this.waitingGroups.push(chatId);
       }
       logger.debug(
-        { groupJid, taskId, activeCount: this.activeCount },
+        { chatId, taskId, activeCount: this.activeCount },
         'At concurrency limit, task queued',
       );
       return;
     }
 
     // 即座に実行
-    this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
-      logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
+    this.runTask(chatId, { id: taskId, chatId, fn }).catch((err) =>
+      logger.error({ chatId, taskId, err }, 'Unhandled error in runTask'),
     );
   }
 
   registerProcess(
-    groupJid: string,
+    chatId: string,
     proc: ChildProcess,
     containerName: string,
-    groupFolder?: string,
   ): void {
-    const state = this.getGroup(groupJid);
+    const state = this.getGroup(chatId);
     state.process = proc;
     state.containerName = containerName;
-    if (groupFolder) state.groupFolder = groupFolder;
   }
 
   /**
    * コンテナをアイドル待機状態（作業が終了し、IPC 入力を待っている状態）としてマークします。
    * 保留中のタスクがある場合は、即座にアイドルコンテナを終了させます。
    */
-  notifyIdle(groupJid: string): void {
-    const state = this.getGroup(groupJid);
+  notifyIdle(chatId: string): void {
+    const state = this.getGroup(chatId);
     state.idleWaiting = true;
     if (state.pendingTasks.length > 0) {
-      this.closeStdin(groupJid);
+      this.closeStdin(chatId);
     }
   }
 
@@ -157,19 +153,18 @@ export class GroupQueue {
    * IPC ファイルを介して、アクティブなコンテナに追撃メッセージを送信します。
    * メッセージが書き込まれた場合は true、アクティブなコンテナがない場合は false を返します。
    */
-  sendMessage(groupJid: string, text: string): boolean {
-    const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer)
-      return false;
+  sendMessage(chatId: string, text: string): boolean {
+    const state = this.getGroup(chatId);
+    if (!state.active || state.isTaskContainer) return false;
     state.idleWaiting = false; // エージェントが作業を受け取ろうとしているため、アイドル状態ではなくなる
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const inputDir = path.join(DATA_DIR, 'ipc', 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', chatId, text }));
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {
@@ -180,11 +175,11 @@ export class GroupQueue {
   /**
    * 終了センチネルを書き込むことで、アクティブなコンテナに終了の合図を送ります。
    */
-  closeStdin(groupJid: string): void {
-    const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder) return;
+  closeStdin(chatId: string): void {
+    const state = this.getGroup(chatId);
+    if (!state.active) return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const inputDir = path.join(DATA_DIR, 'ipc', 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');
@@ -194,10 +189,10 @@ export class GroupQueue {
   }
 
   private async runForGroup(
-    groupJid: string,
+    chatId: string,
     reason: 'messages' | 'drain',
   ): Promise<void> {
-    const state = this.getGroup(groupJid);
+    const state = this.getGroup(chatId);
     state.active = true;
     state.idleWaiting = false;
     state.isTaskContainer = false;
@@ -205,34 +200,33 @@ export class GroupQueue {
     this.activeCount++;
 
     logger.debug(
-      { groupJid, reason, activeCount: this.activeCount },
+      { chatId, reason, activeCount: this.activeCount },
       'Starting container for group',
     );
 
     try {
       if (this.processMessagesFn) {
-        const success = await this.processMessagesFn(groupJid);
+        const success = await this.processMessagesFn(chatId);
         if (success) {
           state.retryCount = 0;
         } else {
-          this.scheduleRetry(groupJid, state);
+          this.scheduleRetry(chatId, state);
         }
       }
     } catch (err) {
-      logger.error({ groupJid, err }, 'Error processing messages for group');
-      this.scheduleRetry(groupJid, state);
+      logger.error({ chatId, err }, 'Error processing messages for group');
+      this.scheduleRetry(chatId, state);
     } finally {
       state.active = false;
       state.process = null;
       state.containerName = null;
-      state.groupFolder = null;
       this.activeCount--;
-      this.drainGroup(groupJid);
+      this.drainGroup(chatId);
     }
   }
 
-  private async runTask(groupJid: string, task: QueuedTask): Promise<void> {
-    const state = this.getGroup(groupJid);
+  private async runTask(chatId: string, task: QueuedTask): Promise<void> {
+    const state = this.getGroup(chatId);
     state.active = true;
     state.idleWaiting = false;
     state.isTaskContainer = true;
@@ -240,31 +234,30 @@ export class GroupQueue {
     this.activeCount++;
 
     logger.debug(
-      { groupJid, taskId: task.id, activeCount: this.activeCount },
+      { chatId, taskId: task.id, activeCount: this.activeCount },
       'Running queued task',
     );
 
     try {
       await task.fn();
     } catch (err) {
-      logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
+      logger.error({ chatId, taskId: task.id, err }, 'Error running task');
     } finally {
       state.active = false;
       state.isTaskContainer = false;
       state.runningTaskId = null;
       state.process = null;
       state.containerName = null;
-      state.groupFolder = null;
       this.activeCount--;
-      this.drainGroup(groupJid);
+      this.drainGroup(chatId);
     }
   }
 
-  private scheduleRetry(groupJid: string, state: GroupState): void {
+  private scheduleRetry(chatId: string, state: GroupState): void {
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
       logger.error(
-        { groupJid, retryCount: state.retryCount },
+        { chatId, retryCount: state.retryCount },
         'Max retries exceeded, dropping messages (will retry on next incoming message)',
       );
       state.retryCount = 0;
@@ -273,28 +266,28 @@ export class GroupQueue {
 
     const delayMs = BASE_RETRY_MS * Math.pow(2, state.retryCount - 1);
     logger.info(
-      { groupJid, retryCount: state.retryCount, delayMs },
+      { chatId, retryCount: state.retryCount, delayMs },
       'Scheduling retry with backoff',
     );
     const timer = setTimeout(() => {
       if (!this.shuttingDown) {
-        this.enqueueMessageCheck(groupJid);
+        this.enqueueMessageCheck(chatId);
       }
     }, delayMs);
     timer.unref?.();
   }
 
-  private drainGroup(groupJid: string): void {
+  private drainGroup(chatId: string): void {
     if (this.shuttingDown) return;
 
-    const state = this.getGroup(groupJid);
+    const state = this.getGroup(chatId);
 
     // タスクを優先（メッセージのように SQLite から再取得されないため）
     if (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
-      this.runTask(groupJid, task).catch((err) =>
+      this.runTask(chatId, task).catch((err) =>
         logger.error(
-          { groupJid, taskId: task.id, err },
+          { chatId, taskId: task.id, err },
           'Unhandled error in runTask (drain)',
         ),
       );
@@ -303,11 +296,8 @@ export class GroupQueue {
 
     // 次に保留中のメッセージ
     if (state.pendingMessages) {
-      this.runForGroup(groupJid, 'drain').catch((err) =>
-        logger.error(
-          { groupJid, err },
-          'Unhandled error in runForGroup (drain)',
-        ),
+      this.runForGroup(chatId, 'drain').catch((err) =>
+        logger.error({ chatId, err }, 'Unhandled error in runForGroup (drain)'),
       );
       return;
     }
@@ -329,16 +319,13 @@ export class GroupQueue {
         const task = state.pendingTasks.shift()!;
         this.runTask(nextJid, task).catch((err) =>
           logger.error(
-            { groupJid: nextJid, taskId: task.id, err },
+            { chatId: nextJid, taskId: task.id, err },
             'Unhandled error in runTask (waiting)',
           ),
         );
       } else if (state.pendingMessages) {
         this.runForGroup(nextJid, 'drain').catch((err) =>
-          logger.error(
-            { groupJid: nextJid, err },
-            'Unhandled error in runForGroup (waiting)',
-          ),
+          logger.error({ chatId: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
         );
       }
       // いずれも保留されていない場合は、このグループをスキップ
@@ -353,7 +340,7 @@ export class GroupQueue {
     // --rm フラグにより、終了時にクリーンアップされる。
     // これにより、WhatsApp の再接続による再起動が、作業中のエージェントを殺すのを防ぐ。
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
+    for (const [chatId, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }

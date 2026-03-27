@@ -22,9 +22,7 @@ import { fileURLToPath } from 'url';
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
-  groupFolder: string;
-  chatJid: string;
-  isMain: boolean;
+  chatId: string;
   isScheduledTask?: boolean;
   assistantName?: string;
 }
@@ -165,7 +163,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const conversationsDir = '/workspace/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -366,13 +364,6 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
-  // グローバルメモリ（CLAUDE.md）を追加のシステムコンテキストとしてロード（全グループで共有）
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
-
   // /workspace/extra/* にマウントされた追加ディレクトリを検出
   // これらは SDK に渡され、配下の CLAUDE.md ファイルが自動的にロードされます
   const extraDirs: string[] = [];
@@ -392,13 +383,10 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd: '/workspace',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -418,9 +406,7 @@ async function runQuery(
           command: 'node',
           args: [mcpServerPath],
           env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_CHAT_ID: containerInput.chatId,
           },
         },
       },
@@ -471,7 +457,7 @@ async function main(): Promise<void> {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* 存在しない可能性あり */ }
-    log(`グループ用の入力を受信しました: ${containerInput.groupFolder}`);
+    log(`チャット入力を受信しました: ${containerInput.chatId}`);
   } catch (err) {
     writeOutput({
       status: 'error',
@@ -497,7 +483,7 @@ async function main(): Promise<void> {
   // 初期プロンプトを構築（保留中の IPC メッセージも吸い出す）
   let prompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
-    prompt = `[定期実行タスク - 以下のメッセージは自動的に送信されたものであり、ユーザーやグループから直接送信されたものではありません。]\n\n${prompt}`;
+    prompt = `[定期実行タスク - 以下のメッセージは自動送信であり、ユーザーやチャットから直接送信されたものではありません。]\n\n${prompt}`;
   }
   const pending = drainIpcInput();
   if (pending.length > 0) {

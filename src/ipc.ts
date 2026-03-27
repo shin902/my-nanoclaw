@@ -4,25 +4,22 @@ import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
-import { AvailableGroup } from './container-runner.js';
+import { AvailableChat } from './container-runner.js';
 import { logger } from './logger.js';
 import {
   deleteTask,
+  getSession,
   getTaskById,
-  loadGroupConfig,
-  saveGroupConfig,
+  saveSession,
   updateTask,
   upsertTask,
 } from './store.js';
 import { ScheduledTask } from './types.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
-  getAvailableGroups: () => AvailableGroup[];
-  writeGroupsSnapshot: (
-    groupFolder: string,
-    availableGroups: AvailableGroup[],
-  ) => void;
+  sendMessage: (chatId: string, text: string) => Promise<void>;
+  getAvailableChats: () => AvailableChat[];
+  writeGroupsSnapshot: (availableChats: AvailableChat[]) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -61,63 +58,54 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
-    groupFolder?: string;
-    chatJid?: string;
-    targetJid?: string;
+    chatId?: string;
+    targetChatId?: string;
     text?: string;
     model?: string;
     sessionId?: string | null;
     resumeAt?: string | null;
   },
-  sourceGroup: string,
   deps: IpcDeps,
 ): Promise<void> {
   switch (data.type) {
     case 'send_message':
-      if (data.chatJid && data.text) {
-        if (data.chatJid !== sourceGroup) {
-          logger.warn(
-            `Unauthorized send_message attempt from group "${sourceGroup}" to "${data.chatJid}"`,
-          );
-          break;
-        }
-        await deps.sendMessage(data.chatJid, data.text);
+      if (data.chatId && data.text) {
+        await deps.sendMessage(data.chatId, data.text);
       }
       break;
 
-    case 'update_config':
-      if (!data.groupFolder) break;
-      const config = loadGroupConfig(data.groupFolder);
-      if (!config) break;
-      saveGroupConfig(data.groupFolder, {
-        ...config,
-        model: data.model ?? config.model,
+    case 'update_config': {
+      if (!data.chatId) break;
+      const session = getSession(data.chatId);
+      if (!session) break;
+      saveSession({
+        ...session,
+        model: data.model ?? session.model,
         sessionId:
           data.sessionId === null
             ? undefined
-            : (data.sessionId ?? config.sessionId),
+            : (data.sessionId ?? session.sessionId),
         resumeAt:
           data.resumeAt === null
             ? undefined
-            : (data.resumeAt ?? config.resumeAt),
+            : (data.resumeAt ?? session.resumeAt),
       });
-      deps.writeGroupsSnapshot(sourceGroup, deps.getAvailableGroups());
+      deps.writeGroupsSnapshot(deps.getAvailableChats());
       break;
+    }
 
     case 'schedule_task':
       if (
         data.prompt &&
         data.schedule_type &&
         data.schedule_value &&
-        data.targetJid &&
-        data.groupFolder
+        data.targetChatId
       ) {
         const task: ScheduledTask = {
           id:
             data.taskId ||
             `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          group_folder: data.groupFolder,
-          chat_jid: data.targetJid,
+          chat_id: data.targetChatId,
           prompt: data.prompt,
           schedule_type: data.schedule_type as 'cron' | 'interval' | 'once',
           schedule_value: data.schedule_value,
@@ -200,124 +188,65 @@ export function startIpcWatcher(deps: IpcDeps): void {
   ipcWatcherRunning = true;
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcBaseDir, { recursive: true });
+  const messagesDir = path.join(ipcBaseDir, 'messages');
+  const tasksDir = path.join(ipcBaseDir, 'tasks');
+  fs.mkdirSync(messagesDir, { recursive: true });
+  fs.mkdirSync(tasksDir, { recursive: true });
 
   const processIpcFiles = async () => {
-    const groupFolders = fs.existsSync(ipcBaseDir)
-      ? fs
-          .readdirSync(ipcBaseDir)
-          .filter((entry) =>
-            fs.statSync(path.join(ipcBaseDir, entry)).isDirectory(),
-          )
-      : [];
+    for (const dirPath of [messagesDir, tasksDir]) {
+      if (!fs.existsSync(dirPath)) continue;
 
-    for (const sourceGroup of groupFolders) {
-      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
-
-      for (const dirPath of [messagesDir, tasksDir]) {
-        if (!fs.existsSync(dirPath)) continue;
-
-        for (const file of fs
-          .readdirSync(dirPath)
-          .filter((name) => name.endsWith('.json'))) {
-          const filePath = path.join(dirPath, file);
+      for (const file of fs
+        .readdirSync(dirPath)
+        .filter((name) => name.endsWith('.json'))) {
+        const filePath = path.join(dirPath, file);
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          if (
+            dirPath === messagesDir &&
+            data.type === 'message' &&
+            data.chatId &&
+            data.text
+          ) {
+            await deps.sendMessage(data.chatId, data.text);
+          } else {
+            await processTaskIpc(data, deps);
+          }
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          logger.error({ filePath, err }, 'Error processing IPC file');
           try {
-            const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-            if (
-              dirPath === messagesDir &&
-              data.type === 'message' &&
-              data.chatJid &&
-              data.text
-            ) {
-              await deps.sendMessage(data.chatJid, data.text);
-            } else {
-              await processTaskIpc(data, sourceGroup, deps);
-            }
-            fs.unlinkSync(filePath);
-          } catch (err) {
-            logger.error({ filePath, err }, 'Error processing IPC file');
+            const errorsDir = path.join(dirPath, 'errors');
+            fs.mkdirSync(errorsDir, { recursive: true });
+            const errorPath = path.join(errorsDir, file);
+            fs.renameSync(filePath, errorPath);
+            logger.info(
+              { filePath, errorPath },
+              'Moved failed IPC file to errors directory',
+            );
+          } catch (moveErr) {
+            logger.error(
+              { filePath, moveErr },
+              'Failed to move bad IPC file, deleting instead',
+            );
             try {
-              const errorsDir = path.join(dirPath, 'errors');
-              fs.mkdirSync(errorsDir, { recursive: true });
-              const errorPath = path.join(errorsDir, file);
-              fs.renameSync(filePath, errorPath);
-              logger.info(
-                { filePath, errorPath },
-                'Moved failed IPC file to errors directory',
-              );
-            } catch (moveErr) {
-              logger.error(
-                { filePath, moveErr },
-                'Failed to move bad IPC file, deleting instead',
-              );
-              try {
-                if (fs.existsSync(filePath)) {
-                  fs.unlinkSync(filePath);
-                }
-              } catch (unlinkErr) {
-                logger.error(
-                  { filePath, unlinkErr },
-                  'Failed to delete bad IPC file after move failure',
-                );
+              if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
               }
-            }
-            try {
-              const errorsDir = path.join(dirPath, 'errors');
-              fs.mkdirSync(errorsDir, { recursive: true });
-              const errorPath = path.join(errorsDir, file);
-              fs.renameSync(filePath, errorPath);
-              logger.info(
-                { filePath, errorPath },
-                'Moved failed IPC file to errors directory',
-              );
-            } catch (moveErr) {
+            } catch (unlinkErr) {
               logger.error(
-                { filePath, moveErr },
-                'Failed to move bad IPC file, deleting instead',
+                { filePath, unlinkErr },
+                'Failed to delete bad IPC file after move failure',
               );
-              try {
-                if (fs.existsSync(filePath)) {
-                  fs.unlinkSync(filePath);
-                }
-              } catch (unlinkErr) {
-                logger.error(
-                  { filePath, unlinkErr },
-                  'Failed to delete bad IPC file after move failure',
-                );
-              }
-            }
-            try {
-              const errorsDir = path.join(dirPath, 'errors');
-              fs.mkdirSync(errorsDir, { recursive: true });
-              const errorPath = path.join(errorsDir, file);
-              fs.renameSync(filePath, errorPath);
-              logger.info(
-                { filePath, errorPath },
-                'Moved failed IPC file to errors directory',
-              );
-            } catch (moveErr) {
-              logger.error(
-                { filePath, moveErr },
-                'Failed to move bad IPC file, deleting instead',
-              );
-              try {
-                if (fs.existsSync(filePath)) {
-                  fs.unlinkSync(filePath);
-                }
-              } catch (unlinkErr) {
-                logger.error(
-                  { filePath, unlinkErr },
-                  'Failed to delete bad IPC file after move failure',
-                );
-              }
             }
           }
         }
       }
     }
 
-    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+    const timer = setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+    timer.unref?.();
   };
 
   processIpcFiles();

@@ -93,13 +93,10 @@ describe('DiscordChannel', () => {
     const onMessage = vi.fn();
     const channel = new DiscordChannel('token', {
       onMessage,
-      getGroupConfig: () => ({
-        jid: 'dc:123',
+      getChatSession: () => ({
+        chatId: 'dc:123',
         name: 'general',
-        folder: 'general',
         model: 'claude-sonnet-4-6',
-        provider: 'claude',
-        added_at: '2026-03-20T00:00:00.000Z',
       }),
       resetSession: vi.fn(),
       updateModel: vi.fn(),
@@ -122,7 +119,7 @@ describe('DiscordChannel', () => {
     expect(onMessage).toHaveBeenCalledWith(
       'dc:123',
       expect.objectContaining({ content: 'hello', sender_name: 'Alice' }),
-      expect.objectContaining({ folder: 'general' }),
+      expect.objectContaining({ chatId: 'dc:123' }),
     );
   });
 
@@ -130,13 +127,10 @@ describe('DiscordChannel', () => {
     const resetSession = vi.fn();
     const channel = new DiscordChannel('token', {
       onMessage: vi.fn(),
-      getGroupConfig: () => ({
-        jid: 'dc:123',
+      getChatSession: () => ({
+        chatId: 'dc:123',
         name: 'general',
-        folder: 'general',
         model: 'claude-sonnet-4-6',
-        provider: 'claude',
-        added_at: '2026-03-20T00:00:00.000Z',
       }),
       resetSession,
       updateModel: vi.fn(),

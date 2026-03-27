@@ -32,31 +32,18 @@ export interface ContainerConfig {
   timeout?: number; // デフォルト: 300000 (5分)
 }
 
-export interface RegisteredGroup {
-  name: string;
-  folder: string;
-  trigger: string;
-  added_at: string;
-  containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean; // デフォルト: グループの場合は true、個人チャットの場合は false
-  isMain?: boolean; // メインコントロールグループの場合は true（トリガー不要、特権あり）
-}
-
-export interface StoredGroupConfig {
-  jid: string;
-  name: string;
-  folder: string;
-  model: string;
-  provider: string;
+export interface ChatSession {
+  chatId: string;
+  name?: string;
   sessionId?: string;
   resumeAt?: string;
-  added_at: string;
+  model?: string;
   containerConfig?: ContainerConfig;
 }
 
 export interface NewMessage {
   id: string;
-  chat_jid: string;
+  chat_id: string;
   sender: string;
   sender_name: string;
   content: string;
@@ -67,8 +54,7 @@ export interface NewMessage {
 
 export interface ScheduledTask {
   id: string;
-  group_folder: string;
-  chat_jid: string;
+  chat_id: string;
   prompt: string;
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
@@ -99,24 +85,24 @@ export interface GroupEvent extends NewMessage {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(chatId: string, text: string): Promise<void>;
   isConnected(): boolean;
-  ownsJid(jid: string): boolean;
+  ownsChatId(chatId: string): boolean;
   disconnect(): Promise<void>;
   // オプション: 入力中インジケーター。サポートするチャネルで実装される。
-  setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  setTyping?(chatId: string, isTyping: boolean): Promise<void>;
   // オプション: プラットフォームからグループ/チャット名を同期する。
   syncGroups?(force: boolean): Promise<void>;
 }
 
 // チャネルが受信メッセージを配信するために使用するコールバック型
-export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
+export type OnInboundMessage = (chatId: string, message: NewMessage) => void;
 
 // チャットのメタデータ検出用コールバック。
 // name はオプション — 名前をインラインで配信するチャネル（Telegram）はここに渡す。
 // 名前を個別に同期するチャネル（syncGroups経由）は省略する。
 export type OnChatMetadata = (
-  chatJid: string,
+  chatId: string,
   timestamp: string,
   name?: string,
   channel?: string,

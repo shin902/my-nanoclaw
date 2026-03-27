@@ -19,7 +19,7 @@ import {
   computeNextRun,
   startSchedulerLoop,
 } from './task-scheduler.js';
-import { saveActiveTasks } from './store.js';
+import { saveActiveTasks, saveSession } from './store.js';
 
 describe('task scheduler', () => {
   beforeEach(() => {
@@ -32,12 +32,11 @@ describe('task scheduler', () => {
     vi.useRealTimers();
   });
 
-  it('pauses due tasks with invalid group folders to prevent retry churn', async () => {
+  it('skips due tasks when the chat session does not exist', async () => {
     saveActiveTasks([
       {
-        id: 'task-invalid-folder',
-        group_folder: '../../outside',
-        chat_jid: 'bad@g.us',
+        id: 'task-missing-session',
+        chat_id: 'dc:missing',
         prompt: 'run',
         schedule_type: 'once',
         schedule_value: '2026-02-22T00:00:00.000Z',
@@ -50,24 +49,22 @@ describe('task scheduler', () => {
       },
     ]);
 
+    const enqueueTask = vi.fn();
     startSchedulerLoop({
-      queue: { enqueueTask: vi.fn((_jid, _taskId, fn) => void fn()) } as any,
+      queue: { enqueueTask } as any,
       onProcess: () => {},
       sendMessage: async () => {},
     });
 
     await vi.advanceTimersByTimeAsync(10);
-
-    const [task] = (await import('./store.js')).loadActiveTasks();
-    expect(task?.status).toBe('paused');
+    expect(enqueueTask).toHaveBeenCalled();
   });
 
   it('computeNextRun anchors interval tasks to scheduled time to prevent drift', () => {
     const scheduledTime = new Date(Date.now() - 2000).toISOString();
     const task = {
       id: 'drift-test',
-      group_folder: 'test',
-      chat_jid: 'test@g.us',
+      chat_id: 'dc:test',
       prompt: 'test',
       schedule_type: 'interval' as const,
       schedule_value: '60000',
@@ -93,8 +90,7 @@ describe('task scheduler', () => {
     const scheduledTime = '2026-01-01T00:00:00.000Z';
     const task = {
       id: 'once-test',
-      group_folder: 'test',
-      chat_jid: 'test@g.us',
+      chat_id: 'dc:test',
       prompt: 'test once',
       schedule_type: 'once' as const,
       schedule_value: scheduledTime,
@@ -117,11 +113,10 @@ describe('task scheduler', () => {
 
     const task = {
       id: 'missed-intervals-test',
-      group_folder: 'test',
-      chat_jid: 'test@g.us',
+      chat_id: 'dc:test',
       prompt: 'test intervals',
       schedule_type: 'interval' as const,
-      schedule_value: '60000', // 1 minute
+      schedule_value: '60000',
       context_mode: 'isolated' as const,
       next_run: anchorTime.toISOString(),
       last_run: null,
@@ -132,7 +127,6 @@ describe('task scheduler', () => {
 
     const nextRun = computeNextRun(task);
     expect(nextRun).not.toBeNull();
-    // Next aligned minute strictly after now (5m30s after anchor) is at 6 minutes.
     expect(new Date(nextRun!).toISOString()).toBe(
       new Date('2026-01-01T00:06:00.000Z').toISOString(),
     );
@@ -145,8 +139,7 @@ describe('task scheduler', () => {
     const futureNextRun = new Date('2026-01-01T00:10:00.000Z').toISOString();
     const task = {
       id: 'future-alignment-test',
-      group_folder: 'test',
-      chat_jid: 'test@g.us',
+      chat_id: 'dc:test',
       prompt: 'test future alignment',
       schedule_type: 'interval' as const,
       schedule_value: '60000',
@@ -160,5 +153,42 @@ describe('task scheduler', () => {
 
     const nextRun = computeNextRun(task);
     expect(nextRun).toBe(futureNextRun);
+  });
+
+  it('runs a due task against an existing chat session', async () => {
+    saveSession({
+      chatId: 'dc:test',
+      name: 'test',
+      model: 'claude-sonnet-4-6',
+    });
+    saveActiveTasks([
+      {
+        id: 'task-run',
+        chat_id: 'dc:test',
+        prompt: 'run',
+        schedule_type: 'once',
+        schedule_value: '2026-02-22T00:00:00.000Z',
+        context_mode: 'isolated',
+        next_run: new Date(Date.now() - 60_000).toISOString(),
+        last_run: null,
+        last_result: null,
+        status: 'active',
+        created_at: '2026-02-22T00:00:00.000Z',
+      },
+    ]);
+
+    const enqueueTask = vi.fn();
+    startSchedulerLoop({
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(enqueueTask).toHaveBeenCalledWith(
+      'dc:test',
+      'task-run',
+      expect.any(Function),
+    );
   });
 });

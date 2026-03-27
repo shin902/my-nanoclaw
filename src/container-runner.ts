@@ -14,8 +14,8 @@ import {
   DATA_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
+  WORKSPACE_DIR,
 } from './config.js';
-import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
@@ -25,7 +25,8 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { RegisteredGroup } from './types.js';
+import { safeChatId } from './store.js';
+import { ChatSession } from './types.js';
 
 // 堅牢な出力パースのためのセンチネルマーカー (agent-runner と一致させる必要があります)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -34,8 +35,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
-  groupFolder: string;
-  chatJid: string;
+  chatId: string;
   model: string;
   isScheduledTask?: boolean;
   assistantName?: string;
@@ -54,30 +54,25 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(group: RegisteredGroup): VolumeMount[] {
+function buildVolumeMounts(): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
-  const groupDir = resolveGroupFolderPath(group.folder);
+  const workspaceClaudeDir = path.join(DATA_DIR, '.claude');
+  const workspaceIpcDir = path.join(DATA_DIR, 'ipc');
+  const skillsSrc = path.join(projectRoot, 'container', 'skills');
+  const skillsDst = path.join(workspaceClaudeDir, 'skills');
+
+  const groupDir = WORKSPACE_DIR;
+  fs.mkdirSync(groupDir, { recursive: true });
+  fs.mkdirSync(path.join(groupDir, 'conversations'), { recursive: true });
+  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
   mounts.push({
     hostPath: groupDir,
-    containerPath: '/workspace/group',
+    containerPath: '/workspace',
     readonly: false,
   });
 
-  // グループごとの Claude セッションディレクトリ（他のグループから隔離）
-  // グループ間のセッションアクセスを防ぐため、各グループは独自の .claude/ を持ちます
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  const projectsDir = path.join(groupSessionsDir, 'projects');
-  fs.mkdirSync(projectsDir, { recursive: true });
-
-  // container/skills/ から各グループ의 .claude/skills/ にスキルを同期
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
+  fs.mkdirSync(path.join(workspaceClaudeDir, 'projects'), { recursive: true });
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
       const srcDir = path.join(skillsSrc, skillDir);
@@ -87,49 +82,22 @@ function buildVolumeMounts(group: RegisteredGroup): VolumeMount[] {
     }
   }
   mounts.push({
-    hostPath: projectsDir,
-    containerPath: '/home/node/.claude/projects',
-    readonly: false,
-  });
-  mounts.push({
-    hostPath: skillsDst,
-    containerPath: '/home/node/.claude/skills',
+    hostPath: workspaceClaudeDir,
+    containerPath: '/home/node/.claude',
     readonly: false,
   });
 
-  // グループごとの IPC ネームスペース: 各グループは独自の IPC ディレクトリを持ちます
-  // これにより、IPC を介したグループを跨ぐ権限昇格を防ぎます
-  const groupIpcDir = resolveGroupIpcPath(group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(workspaceIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(workspaceIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(workspaceIpcDir, 'input'), { recursive: true });
   mounts.push({
-    hostPath: groupIpcDir,
+    hostPath: workspaceIpcDir,
     containerPath: '/workspace/ipc',
     readonly: false,
   });
-
-  // agent-runner のソースをグループごとの書き込み可能な場所にコピーし、
-  // エージェントが他のグループに影響を与えずにカスタマイズ（ツールの追加、
-  // 動作の変更）できるようにします。コンテナ起動時に entrypoint.sh を介して再コンパイルされます。
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
-  const groupAgentRunnerDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    'agent-runner-src',
-  );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-  }
   mounts.push({
-    hostPath: groupAgentRunnerDir,
-    containerPath: '/app/src',
+    hostPath: projectRoot,
+    containerPath: '/workspace/project',
     readonly: false,
   });
 
@@ -197,24 +165,24 @@ function buildContainerArgs(
 }
 
 export async function runContainerAgent(
-  group: RegisteredGroup,
+  session: ChatSession,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
-  const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  const groupDir = WORKSPACE_DIR;
+  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  const mounts = buildVolumeMounts(group);
-  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const mounts = buildVolumeMounts();
+  const safeName = safeChatId(session.chatId).replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
 
   logger.debug(
     {
-      group: group.name,
+      chatId: session.chatId,
       containerName,
       mounts: mounts.map(
         (m) =>
@@ -227,7 +195,7 @@ export async function runContainerAgent(
 
   logger.info(
     {
-      group: group.name,
+      chatId: session.chatId,
       containerName,
       mountCount: mounts.length,
       model: input.model,
@@ -268,7 +236,7 @@ export async function runContainerAgent(
           stdout += chunk.slice(0, remaining);
           stdoutTruncated = true;
           logger.warn(
-            { group: group.name, size: stdout.length },
+            { chatId: session.chatId, size: stdout.length },
             'Container stdout truncated due to size limit',
           );
         } else {
@@ -302,7 +270,7 @@ export async function runContainerAgent(
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
             logger.warn(
-              { group: group.name, error: err },
+              { chatId: session.chatId, error: err },
               'Failed to parse streamed output chunk',
             );
           }
@@ -314,7 +282,7 @@ export async function runContainerAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (line) logger.debug({ container: session.chatId }, line);
       }
       // stderr ではタイムアウトをリセットしない — SDK はデバッグログを常に出力するため。
       // タイムアウトは、実際の出力（stdout 内の OUTPUT_MARKER）に対してのみリセットされる。
@@ -324,7 +292,7 @@ export async function runContainerAgent(
         stderr += chunk.slice(0, remaining);
         stderrTruncated = true;
         logger.warn(
-          { group: group.name, size: stderr.length },
+          { chatId: session.chatId, size: stderr.length },
           'Container stderr truncated due to size limit',
         );
       } else {
@@ -334,7 +302,7 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    const configTimeout = session.containerConfig?.timeout || CONTAINER_TIMEOUT;
     // 猶予期間: ハード kill が発動する前に、グレースフルな _close センチネルが発動する
     // 時間を確保するため、ハードタイムアウトは少なくとも IDLE_TIMEOUT + 30秒である必要があります。
     const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
@@ -342,13 +310,13 @@ export async function runContainerAgent(
     const killOnTimeout = () => {
       timedOut = true;
       logger.error(
-        { group: group.name, containerName },
+        { chatId: session.chatId, containerName },
         'Container timeout, stopping gracefully',
       );
       exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
         if (err) {
           logger.warn(
-            { group: group.name, containerName, err },
+            { chatId: session.chatId, containerName, err },
             'Graceful stop failed, force killing',
           );
           container.kill('SIGKILL');
@@ -376,7 +344,7 @@ export async function runContainerAgent(
           [
             `=== Container Run Log (TIMEOUT) ===`,
             `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
+            `Chat ID: ${session.chatId}`,
             `Container: ${containerName}`,
             `Duration: ${duration}ms`,
             `Exit Code: ${code}`,
@@ -389,7 +357,7 @@ export async function runContainerAgent(
         // コンテナが回収されただけである。
         if (hadStreamingOutput) {
           logger.info(
-            { group: group.name, containerName, duration, code },
+            { chatId: session.chatId, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
@@ -403,7 +371,7 @@ export async function runContainerAgent(
         }
 
         logger.error(
-          { group: group.name, containerName, duration, code },
+          { chatId: session.chatId, containerName, duration, code },
           'Container timed out with no output',
         );
 
@@ -423,7 +391,7 @@ export async function runContainerAgent(
       const logLines = [
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
-        `Group: ${group.name}`,
+        `Chat ID: ${session.chatId}`,
         `Model: ${input.model}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
@@ -476,7 +444,7 @@ export async function runContainerAgent(
       if (code !== 0) {
         logger.error(
           {
-            group: group.name,
+            chatId: session.chatId,
             code,
             duration,
             stderr,
@@ -498,7 +466,7 @@ export async function runContainerAgent(
       if (onOutput) {
         outputChain.then(() => {
           logger.info(
-            { group: group.name, duration, newSessionId },
+            { chatId: session.chatId, duration, newSessionId },
             'Container completed (streaming mode)',
           );
           resolve({
@@ -531,7 +499,7 @@ export async function runContainerAgent(
 
         logger.info(
           {
-            group: group.name,
+            chatId: session.chatId,
             duration,
             status: output.status,
             hasResult: !!output.result,
@@ -543,7 +511,7 @@ export async function runContainerAgent(
       } catch (err) {
         logger.error(
           {
-            group: group.name,
+            chatId: session.chatId,
             stdout,
             stderr,
             error: err,
@@ -562,7 +530,7 @@ export async function runContainerAgent(
     container.on('error', (err) => {
       clearTimeout(timeout);
       logger.error(
-        { group: group.name, containerName, error: err },
+        { chatId: session.chatId, containerName, error: err },
         'Container spawn error',
       );
       resolve({
@@ -575,10 +543,9 @@ export async function runContainerAgent(
 }
 
 export function writeTasksSnapshot(
-  groupFolder: string,
   tasks: Array<{
     id: string;
-    groupFolder: string;
+    chatId: string;
     prompt: string;
     schedule_type: string;
     schedule_value: string;
@@ -586,23 +553,16 @@ export function writeTasksSnapshot(
     next_run: string | null;
   }>,
 ): void {
-  // フィルタリングされたタスクをグループの IPC ディレクトリに書き込む
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
-
-  const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
+  const ipcDir = path.join(DATA_DIR, 'ipc');
+  fs.mkdirSync(ipcDir, { recursive: true });
   fs.writeFileSync(
-    tasksFile,
-    JSON.stringify(
-      tasks.filter((task) => task.groupFolder === groupFolder),
-      null,
-      2,
-    ),
+    path.join(ipcDir, 'current_tasks.json'),
+    JSON.stringify(tasks, null, 2),
   );
 }
 
-export interface AvailableGroup {
-  jid: string;
+export interface AvailableChat {
+  chatId: string;
   name: string;
   lastActivity: string;
   isRegistered: boolean;
@@ -614,18 +574,16 @@ export interface AvailableGroup {
  * メイン以外のグループは、自身の登録ステータスのみを表示できます。
  */
 export function writeGroupsSnapshot(
-  groupFolder: string,
-  groups: AvailableGroup[],
+  chats: AvailableChat[],
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
-
-  const groupsFile = path.join(groupIpcDir, 'available_groups.json');
+  const ipcDir = path.join(DATA_DIR, 'ipc');
+  fs.mkdirSync(ipcDir, { recursive: true });
+  const groupsFile = path.join(ipcDir, 'available_groups.json');
   fs.writeFileSync(
     groupsFile,
     JSON.stringify(
       {
-        groups,
+        chats,
         lastSync: new Date().toISOString(),
       },
       null,

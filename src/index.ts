@@ -19,61 +19,61 @@ import { formatMessages, formatOutbound } from './router.js';
 import {
   appendEvent,
   getAllTasks,
-  listRegisteredGroups,
-  loadGroupConfig,
+  listSessions,
   readRecentEvents,
-  saveGroupConfig,
+  saveSession,
 } from './store.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, StoredGroupConfig } from './types.js';
+import { Channel, ChatSession, NewMessage } from './types.js';
 
 export { escapeXml, formatMessages } from './router.js';
 
-let registeredGroups: Record<string, StoredGroupConfig> = {};
+let sessions: Record<string, ChatSession> = {};
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
-function loadRegisteredGroups(): void {
-  registeredGroups = Object.fromEntries(
-    listRegisteredGroups().map((group) => [group.jid, group]),
+function loadChatSessions(): void {
+  sessions = Object.fromEntries(
+    listSessions().map((session) => [session.chatId, session]),
   );
 }
 
-export function getAvailableGroups(): import('./container-runner.js').AvailableGroup[] {
-  return Object.values(registeredGroups)
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((group) => ({
-      jid: group.jid,
-      name: group.name,
-      lastActivity: group.resumeAt || group.added_at,
+export function getAvailableChats(): import('./container-runner.js').AvailableChat[] {
+  return Object.values(sessions)
+    .sort((a, b) =>
+      (a.name || a.chatId).localeCompare(b.name || b.chatId),
+    )
+    .map((session) => ({
+      chatId: session.chatId,
+      name: session.name || session.chatId,
+      lastActivity: session.resumeAt || '',
       isRegistered: true,
     }));
 }
 
-export function _setRegisteredGroups(
-  groups: Record<string, StoredGroupConfig>,
+export function _setSessions(
+  nextSessions: Record<string, ChatSession>,
 ): void {
-  registeredGroups = groups;
+  sessions = nextSessions;
 }
 
-function saveRegisteredGroup(group: StoredGroupConfig): void {
-  saveGroupConfig(group.folder, group);
-  registeredGroups[group.jid] = group;
+function saveChatSession(session: ChatSession): void {
+  saveSession(session);
+  sessions[session.chatId] = session;
 }
 
 async function runAgent(
-  group: StoredGroupConfig,
+  session: ChatSession,
   prompt: string,
-  chatJid: string,
+  chatId: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const tasks = getAllTasks();
   writeTasksSnapshot(
-    group.folder,
     tasks.map((task) => ({
       id: task.id,
-      groupFolder: task.group_folder,
+      chatId: task.chat_id,
       prompt: task.prompt,
       schedule_type: task.schedule_type,
       schedule_value: task.schedule_value,
@@ -81,31 +81,23 @@ async function runAgent(
       next_run: task.next_run,
     })),
   );
-  writeGroupsSnapshot(group.folder, getAvailableGroups());
+  writeGroupsSnapshot(getAvailableChats());
 
   try {
     const output = await runContainerAgent(
-      {
-        name: group.name,
-        folder: group.folder,
-        trigger: '',
-        added_at: group.added_at,
-        containerConfig: group.containerConfig,
-      },
+      session,
       {
         prompt,
-        sessionId: group.sessionId,
-        groupFolder: group.folder,
-        chatJid,
-        model: group.model,
+        sessionId: session.sessionId,
+        chatId,
+        model: session.model || 'claude-sonnet-4-6',
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      (proc, containerName) => queue.registerProcess(chatId, proc, containerName),
       async (streamed) => {
         if (streamed.newSessionId) {
-          saveRegisteredGroup({
-            ...group,
+          saveChatSession({
+            ...session,
             sessionId: streamed.newSessionId,
           });
         }
@@ -114,29 +106,29 @@ async function runAgent(
     );
 
     if (output.newSessionId) {
-      saveRegisteredGroup({
-        ...group,
+      saveChatSession({
+        ...session,
         sessionId: output.newSessionId,
       });
     }
 
     return output.status === 'success' ? 'success' : 'error';
   } catch (err) {
-    logger.error({ err, chatJid }, 'Agent error');
+    logger.error({ err, chatId }, 'Agent error');
     return 'error';
   }
 }
 
-async function processGroupMessages(chatJid: string): Promise<boolean> {
-  const group = registeredGroups[chatJid];
-  if (!group) return true;
+async function processChatMessages(chatId: string): Promise<boolean> {
+  const session = sessions[chatId];
+  if (!session) return true;
 
-  const channel = channels.find((entry) => entry.ownsJid(chatJid));
+  const channel = channels.find((entry) => entry.ownsChatId(chatId));
   if (!channel) return true;
 
-  const events = readRecentEvents(group.folder, 200).filter(
+  const events = readRecentEvents(chatId, 200).filter(
     (event) =>
-      (!group.resumeAt || event.timestamp > group.resumeAt) &&
+      (!session.resumeAt || event.timestamp > session.resumeAt) &&
       event.content.trim().length > 0,
   );
 
@@ -145,16 +137,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const prompt = formatMessages(events, TIMEZONE);
   let hadError = false;
 
-  await channel.setTyping?.(chatJid, true);
+  await channel.setTyping?.(chatId, true);
 
-  const status = await runAgent(group, prompt, chatJid, async (result) => {
+  const status = await runAgent(session, prompt, chatId, async (result) => {
     if (result.result) {
       const text = formatOutbound(result.result);
       if (text) {
-        await channel.sendMessage(chatJid, text);
-        appendEvent(group.folder, {
+        await channel.sendMessage(chatId, text);
+        appendEvent(chatId, {
           id: `assistant-${Date.now()}`,
-          chat_jid: chatJid,
+          chat_id: chatId,
           sender: ASSISTANT_NAME,
           sender_name: ASSISTANT_NAME,
           content: text,
@@ -166,18 +158,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
     }
     if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
+      queue.notifyIdle(chatId);
     }
     if (result.status === 'error') {
       hadError = true;
     }
   });
 
-  await channel.setTyping?.(chatJid, false);
+  await channel.setTyping?.(chatId, false);
 
   if (status === 'success' && !hadError) {
-    saveRegisteredGroup({
-      ...group,
+    saveChatSession({
+      ...session,
       resumeAt: events[events.length - 1].timestamp,
     });
     return true;
@@ -186,19 +178,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return false;
 }
 
-async function compactGroup(chatJid: string): Promise<void> {
-  const group = registeredGroups[chatJid];
-  if (!group) return;
-  const events = readRecentEvents(group.folder, 50);
+async function compactChat(chatId: string): Promise<void> {
+  const session = sessions[chatId];
+  if (!session) return;
+  const events = readRecentEvents(chatId, 50);
   const summary = events
     .slice(-10)
     .map((event) => `${event.sender_name}: ${event.content}`)
     .join('\n')
     .slice(0, 4000);
 
-  appendEvent(group.folder, {
+  appendEvent(chatId, {
     id: `summary-${Date.now()}`,
-    chat_jid: chatJid,
+    chat_id: chatId,
     sender: ASSISTANT_NAME,
     sender_name: ASSISTANT_NAME,
     content: summary,
@@ -217,7 +209,7 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
-  loadRegisteredGroups();
+  loadChatSessions();
 
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -235,26 +227,26 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   const discord = createDiscordChannel({
-    onMessage: (chatJid: string, message: NewMessage, group) => {
-      appendEvent(group.folder, { ...message, type: 'message' });
-      queue.enqueueMessageCheck(chatJid);
+    onMessage: (chatId: string, message: NewMessage) => {
+      appendEvent(chatId, { ...message, type: 'message' });
+      queue.enqueueMessageCheck(chatId);
     },
-    getGroupConfig: (chatJid) => registeredGroups[chatJid],
-    resetSession: (chatJid) => {
-      const group = registeredGroups[chatJid];
-      if (!group) return;
-      saveRegisteredGroup({
-        ...group,
+    getChatSession: (chatId) => sessions[chatId],
+    resetSession: (chatId) => {
+      const session = sessions[chatId];
+      if (!session) return;
+      saveChatSession({
+        ...session,
         sessionId: undefined,
         resumeAt: undefined,
       });
     },
-    updateModel: (chatJid, model) => {
-      const group = registeredGroups[chatJid];
-      if (!group) return;
-      saveRegisteredGroup({ ...group, model });
+    updateModel: (chatId, model) => {
+      const session = sessions[chatId];
+      if (!session) return;
+      saveChatSession({ ...session, model });
     },
-    compact: (chatJid) => compactGroup(chatJid),
+    compact: (chatId) => compactChat(chatId),
   });
 
   if (!discord) {
@@ -266,28 +258,27 @@ async function main(): Promise<void> {
 
   startSchedulerLoop({
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
-      const channel = channels.find((entry) => entry.ownsJid(jid));
+    onProcess: (chatId, proc, containerName) =>
+      queue.registerProcess(chatId, proc, containerName),
+    sendMessage: async (chatId, rawText) => {
+      const channel = channels.find((entry) => entry.ownsChatId(chatId));
       if (!channel) return;
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) await channel.sendMessage(chatId, text);
     },
   });
 
   startIpcWatcher({
-    sendMessage: async (jid, text) => {
-      const channel = channels.find((entry) => entry.ownsJid(jid));
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      await channel.sendMessage(jid, text);
+    sendMessage: async (chatId, text) => {
+      const channel = channels.find((entry) => entry.ownsChatId(chatId));
+      if (!channel) throw new Error(`No channel for chat ID: ${chatId}`);
+      await channel.sendMessage(chatId, text);
     },
-    getAvailableGroups,
-    writeGroupsSnapshot: (groupFolder, groups) =>
-      writeGroupsSnapshot(groupFolder, groups),
+    getAvailableChats,
+    writeGroupsSnapshot: (chats) => writeGroupsSnapshot(chats),
   });
 
-  queue.setProcessMessagesFn(processGroupMessages);
+  queue.setProcessMessagesFn(processChatMessages);
 }
 
 const isDirectRun =

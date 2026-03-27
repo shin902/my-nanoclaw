@@ -36,17 +36,19 @@ export function formatOutbound(rawText: string): string {
 
 export function routeOutbound(
   channels: Channel[],
-  jid: string,
+  chatId: string,
   text: string,
 ): Promise<void> {
-  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
-  if (!channel) throw new Error(`No channel for JID: ${jid}`);
-  return channel.sendMessage(jid, text);
+  const channel = channels.find(
+    (c) => c.ownsChatId(chatId) && c.isConnected(),
+  );
+  if (!channel) throw new Error(`No channel for chat ID: ${chatId}`);
+  return channel.sendMessage(chatId, text);
 }
 
 export function findChannel(
   channels: Channel[],
-  jid: string,
+  chatId: string,
 ): Channel | undefined {
-  return channels.find((c) => c.ownsJid(jid));
+  return channels.find((c) => c.ownsChatId(chatId));
 }

@@ -12,7 +12,7 @@ import { NewMessage } from './types.js';
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
   return {
     id: '1',
-    chat_jid: 'group@g.us',
+    chat_id: 'group@g.us',
     sender: '123@s.whatsapp.net',
     sender_name: 'Alice',
     content: 'hello',

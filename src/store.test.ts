@@ -15,6 +15,7 @@ vi.mock('./config.js', () => ({
 vi.mock('./logger.js', () => ({
   logger: {
     warn: vi.fn(),
+    error: vi.fn(),
   },
 }));
 
@@ -22,15 +23,16 @@ import {
   _internals,
   appendEvent,
   appendTaskLog,
-  listRegisteredGroups,
+  getSession,
   loadActiveTasks,
-  loadGroupConfig,
+  loadSessions,
   readRecentEvents,
   readTodayEvents,
+  safeChatId,
   saveActiveTasks,
-  saveGroupConfig,
+  saveSession,
 } from './store.js';
-import type { GroupEvent, ScheduledTask, StoredGroupConfig } from './types.js';
+import type { ChatSession, GroupEvent, ScheduledTask } from './types.js';
 
 function writeJsonl(filePath: string, rows: unknown[]): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -52,10 +54,14 @@ describe('store', () => {
     vi.clearAllMocks();
   });
 
+  it('sanitizes chat ids for filesystem paths', () => {
+    expect(safeChatId('dc:123/abc')).toBe('dc-123-abc');
+  });
+
   it('appends and reads events in chronological order for today', () => {
     const eventA: GroupEvent = {
       id: '1',
-      chat_jid: 'dc:1',
+      chat_id: 'dc:1',
       sender: 'u1',
       sender_name: 'Alice',
       content: 'first',
@@ -69,10 +75,10 @@ describe('store', () => {
     };
 
     vi.setSystemTime(new Date('2026-03-20T09:00:00.000Z'));
-    appendEvent('group-one', eventB);
-    appendEvent('group-one', eventA);
+    appendEvent('dc:1', eventB);
+    appendEvent('dc:1', eventA);
 
-    expect(readTodayEvents('group-one').map((event) => event.id)).toEqual([
+    expect(readTodayEvents('dc:1').map((event) => event.id)).toEqual([
       '1',
       '2',
     ]);
@@ -81,21 +87,21 @@ describe('store', () => {
   it('reads recent events across today and yesterday and applies limit', () => {
     vi.setSystemTime(new Date('2026-03-20T09:00:00.000Z'));
 
-    const groupDir = path.join(_internals.GROUPS_DATA_DIR, 'group-one');
-    writeJsonl(path.join(groupDir, '2026-03-19.jsonl'), [
+    const chatDir = path.join(_internals.CHATS_DATA_DIR, 'dc-1');
+    writeJsonl(path.join(chatDir, '2026-03-19.jsonl'), [
       {
         id: 'a',
-        chat_jid: 'dc:1',
+        chat_id: 'dc:1',
         sender: 'u1',
         sender_name: 'Alice',
         content: 'yesterday',
         timestamp: '2026-03-19T23:59:59.000Z',
       },
     ]);
-    writeJsonl(path.join(groupDir, '2026-03-20.jsonl'), [
+    writeJsonl(path.join(chatDir, '2026-03-20.jsonl'), [
       {
         id: 'b',
-        chat_jid: 'dc:1',
+        chat_id: 'dc:1',
         sender: 'u1',
         sender_name: 'Alice',
         content: 'today-1',
@@ -103,7 +109,7 @@ describe('store', () => {
       },
       {
         id: 'c',
-        chat_jid: 'dc:1',
+        chat_id: 'dc:1',
         sender: 'u1',
         sender_name: 'Alice',
         content: 'today-2',
@@ -111,47 +117,36 @@ describe('store', () => {
       },
     ]);
 
-    expect(readRecentEvents('group-one', 2).map((event) => event.id)).toEqual([
+    expect(readRecentEvents('dc:1', 2).map((event) => event.id)).toEqual([
       'b',
       'c',
     ]);
   });
 
-  it('saves and loads group config atomically', () => {
-    const config: StoredGroupConfig = {
-      jid: 'dc:1',
+  it('saves and loads sessions atomically', () => {
+    const session: ChatSession = {
+      chatId: 'dc:1',
       name: 'general',
-      folder: 'general',
       model: 'claude-sonnet-4-6',
-      provider: 'claude',
       sessionId: 'session-123',
-      added_at: '2026-03-20T00:00:00.000Z',
+      resumeAt: '2026-03-20T00:00:00.000Z',
       containerConfig: { timeout: 1234 },
     };
 
-    saveGroupConfig('general', config);
+    saveSession(session);
 
-    expect(loadGroupConfig('general')).toEqual(config);
-    expect(fs.existsSync(`${_internals.groupConfigPath('general')}.tmp`)).toBe(
-      false,
-    );
+    expect(getSession('dc:1')).toEqual(session);
+    expect(fs.existsSync(`${_internals.SESSIONS_PATH}.tmp`)).toBe(false);
   });
 
-  it('lists only registered groups with config files', () => {
-    saveGroupConfig('group-a', {
-      jid: 'dc:1',
+  it('lists saved sessions', () => {
+    saveSession({
+      chatId: 'dc:1',
       name: 'group-a',
-      folder: 'group-a',
-      model: 'claude-sonnet-4-6',
-      provider: 'claude',
-      added_at: '2026-03-20T00:00:00.000Z',
-    });
-    fs.mkdirSync(path.join(_internals.GROUPS_DATA_DIR, 'group-b'), {
-      recursive: true,
     });
 
-    expect(listRegisteredGroups()).toEqual([
-      expect.objectContaining({ jid: 'dc:1', folder: 'group-a' }),
+    expect(loadSessions()).toEqual([
+      expect.objectContaining({ chatId: 'dc:1', name: 'group-a' }),
     ]);
   });
 
@@ -159,8 +154,7 @@ describe('store', () => {
     const tasks: ScheduledTask[] = [
       {
         id: 'task-1',
-        group_folder: 'group-a',
-        chat_jid: 'dc:1',
+        chat_id: 'dc:1',
         prompt: 'hello',
         schedule_type: 'once',
         schedule_value: '2026-03-20T01:00:00.000Z',

@@ -1,6 +1,5 @@
 import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
-import fs from 'fs';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
@@ -12,22 +11,14 @@ import {
   appendTaskLog,
   getAllTasks,
   getDueTasks,
+  getSession,
   getTaskById,
-  loadGroupConfig,
   updateTask,
 } from './store.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { ScheduledTask } from './types.js';
 
-/**
- * 定期実行タスクの次回の実行時間を計算します。
- * インターバルベースのタスクで累積的なドリフトを防ぐため、
- * Date.now() ではなくタスクの予定時刻を基準にします。
- *
- * Co-authored-by: @community-pr-601
- */
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') return null;
 
@@ -43,16 +34,17 @@ export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
     if (!ms || ms <= 0) {
-      // 無限ループを引き起こす可能性のある不正なインターバル値をガードします
       logger.warn(
         { taskId: task.id, value: task.schedule_value },
         'Invalid interval value',
       );
       return new Date(now + 60_000).toISOString();
     }
-    // ドリフトを防ぐため、現在時刻ではなく予定時刻を基準にします。
-    // 常に未来の時刻になるよう、逃したインターバルはスキップします。
-    let next = new Date(task.next_run!).getTime() + ms;
+    const scheduledAt = new Date(task.next_run!).getTime();
+    if (scheduledAt > now) {
+      return task.next_run;
+    }
+    let next = scheduledAt + ms;
     while (next <= now) {
       next += ms;
     }
@@ -65,12 +57,11 @@ export function computeNextRun(task: ScheduledTask): string | null {
 export interface SchedulerDependencies {
   queue: GroupQueue;
   onProcess: (
-    groupJid: string,
+    chatId: string,
     proc: ChildProcess,
     containerName: string,
-    groupFolder: string,
   ) => void;
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (chatId: string, text: string) => Promise<void>;
 }
 
 async function runTask(
@@ -78,16 +69,14 @@ async function runTask(
   deps: SchedulerDependencies,
 ): Promise<void> {
   const startTime = Date.now();
-  let groupDir: string;
-  try {
-    groupDir = resolveGroupFolderPath(task.group_folder);
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    // 不正な古い行によるリトライの繰り返しを停止します。
-    updateTask(task.id, { status: 'paused' });
+
+  logger.info({ taskId: task.id, chatId: task.chat_id }, 'Running scheduled task');
+
+  const session = getSession(task.chat_id);
+  if (!session) {
     logger.error(
-      { taskId: task.id, groupFolder: task.group_folder, error },
-      'Task has invalid group folder',
+      { taskId: task.id, chatId: task.chat_id },
+      'Session not found for task',
     );
     appendTaskLog({
       task_id: task.id,
@@ -95,42 +84,16 @@ async function runTask(
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
-      error,
-    });
-    return;
-  }
-  fs.mkdirSync(groupDir, { recursive: true });
-
-  logger.info(
-    { taskId: task.id, group: task.group_folder },
-    'Running scheduled task',
-  );
-
-  const group = loadGroupConfig(task.group_folder);
-
-  if (!group) {
-    logger.error(
-      { taskId: task.id, groupFolder: task.group_folder },
-      'Group not found for task',
-    );
-    appendTaskLog({
-      task_id: task.id,
-      run_at: new Date().toISOString(),
-      duration_ms: Date.now() - startTime,
-      status: 'error',
-      result: null,
-      error: `Group not found: ${task.group_folder}`,
+      error: `Session not found: ${task.chat_id}`,
     });
     return;
   }
 
-  // コンテナが読み取るためのタスクスナップショットを更新します（グループでフィルタリング）
   const tasks = getAllTasks();
   writeTasksSnapshot(
-    task.group_folder,
     tasks.map((t) => ({
       id: t.id,
-      groupFolder: t.group_folder,
+      chatId: t.chat_id,
       prompt: t.prompt,
       schedule_type: t.schedule_type,
       schedule_value: t.schedule_value,
@@ -141,52 +104,41 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
-  const sessionId = task.context_mode === 'group' ? group.sessionId : undefined;
+  const sessionId =
+    task.context_mode === 'group' ? session.sessionId : undefined;
 
-  // タスクが結果を出力した後、速やかにコンテナを閉じます。
-  // タスクはシングルターン（1往復）であり、クエリループがタイムアウトするまで
-  // IDLE_TIMEOUT (30分) を待つ必要はありません。短い遅延で最終的な MCP コールを処理します。
   const TASK_CLOSE_DELAY_MS = 10000;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const scheduleClose = () => {
-    if (closeTimer) return; // すでにスケジュール済み
+    if (closeTimer) return;
     closeTimer = setTimeout(() => {
       logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      deps.queue.closeStdin(task.chat_id);
     }, TASK_CLOSE_DELAY_MS);
   };
 
   try {
     const output = await runContainerAgent(
-      {
-        name: group.name,
-        folder: group.folder,
-        trigger: '',
-        added_at: group.added_at,
-        containerConfig: group.containerConfig,
-      },
+      session,
       {
         prompt: task.prompt,
         sessionId,
-        groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
-        model: group.model,
+        chatId: task.chat_id,
+        model: session.model || 'claude-sonnet-4-6',
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+      (proc, containerName) => deps.onProcess(task.chat_id, proc, containerName),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // 結果をユーザーに転送します（sendMessage がフォーマットを処理します）
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          await deps.sendMessage(task.chat_id, streamedOutput.result);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
-          scheduleClose(); // 結果が null の場合（IPC のみのタスクなど）でも速やかに閉じます
+          deps.queue.notifyIdle(task.chat_id);
+          scheduleClose();
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
@@ -199,7 +151,6 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // 結果は上記のストリーミングコールバック経由ですでにユーザーに転送されています
       result = output.result;
     }
 
@@ -256,13 +207,12 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       }
 
       for (const task of dueTasks) {
-        // タスクが一時停止またはキャンセルされた場合に備えて、タスクの状態を再確認します
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
           continue;
         }
 
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
+        deps.queue.enqueueTask(currentTask.chat_id, currentTask.id, () =>
           runTask(currentTask, deps),
         );
       }
@@ -277,7 +227,6 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   loop();
 }
 
-/** @internal - テスト用のみ。 */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;
 }

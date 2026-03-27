@@ -9,18 +9,18 @@ import {
 
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { Channel, NewMessage, StoredGroupConfig } from '../types.js';
+import { Channel, ChatSession, NewMessage } from '../types.js';
 
 export interface DiscordChannelOpts {
   onMessage: (
-    chatJid: string,
+    chatId: string,
     message: NewMessage,
-    config: StoredGroupConfig,
+    session: ChatSession,
   ) => void;
-  getGroupConfig: (chatJid: string) => StoredGroupConfig | undefined;
-  resetSession: (chatJid: string) => void;
-  updateModel: (chatJid: string, model: string) => void;
-  compact: (chatJid: string) => Promise<void>;
+  getChatSession: (chatId: string) => ChatSession | undefined;
+  resetSession: (chatId: string) => void;
+  updateModel: (chatId: string, model: string) => void;
+  compact: (chatId: string) => Promise<void>;
 }
 
 export class DiscordChannel implements Channel {
@@ -36,9 +36,9 @@ export class DiscordChannel implements Channel {
   private async handleInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    const chatJid = `dc:${interaction.channelId}`;
-    const config = this.opts.getGroupConfig(chatJid);
-    if (!config) {
+    const chatId = `dc:${interaction.channelId}`;
+    const session = this.opts.getChatSession(chatId);
+    if (!session) {
       await interaction.reply({
         content: 'This channel is not registered.',
         ephemeral: true,
@@ -47,20 +47,20 @@ export class DiscordChannel implements Channel {
     }
 
     if (interaction.commandName === 'new') {
-      this.opts.resetSession(chatJid);
+      this.opts.resetSession(chatId);
       await interaction.reply('Session reset.');
       return;
     }
 
     if (interaction.commandName === 'model') {
       const model = interaction.options.getString('model', true);
-      this.opts.updateModel(chatJid, model);
+      this.opts.updateModel(chatId, model);
       await interaction.reply(`Model updated to ${model}.`);
       return;
     }
 
     if (interaction.commandName === 'compact') {
-      await this.opts.compact(chatJid);
+      await this.opts.compact(chatId);
       await interaction.reply('Conversation compacted.');
     }
   }
@@ -78,9 +78,9 @@ export class DiscordChannel implements Channel {
     this.client.on(Events.MessageCreate, async (message: Message) => {
       if (message.author.bot) return;
 
-      const chatJid = `dc:${message.channelId}`;
-      const config = this.opts.getGroupConfig(chatJid);
-      if (!config) return;
+      const chatId = `dc:${message.channelId}`;
+      const session = this.opts.getChatSession(chatId);
+      if (!session) return;
 
       let content = message.content;
       const attachments = [...message.attachments.values()].map((att) =>
@@ -108,10 +108,10 @@ export class DiscordChannel implements Channel {
       }
 
       this.opts.onMessage(
-        chatJid,
+        chatId,
         {
           id: message.id,
-          chat_jid: chatJid,
+          chat_id: chatId,
           sender: message.author.id,
           sender_name:
             message.member?.displayName ||
@@ -121,7 +121,7 @@ export class DiscordChannel implements Channel {
           timestamp: message.createdAt.toISOString(),
           is_from_me: false,
         },
-        config,
+        session,
       );
     });
 
@@ -164,10 +164,10 @@ export class DiscordChannel implements Channel {
     await this.client.login(this.botToken);
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(chatId: string, text: string): Promise<void> {
     if (!this.client) return;
 
-    const channel = await this.client.channels.fetch(jid.replace(/^dc:/, ''));
+    const channel = await this.client.channels.fetch(chatId.replace(/^dc:/, ''));
     if (!channel || !('send' in channel)) return;
 
     const textChannel = channel as TextChannel;
@@ -181,8 +181,8 @@ export class DiscordChannel implements Channel {
     return this.client !== null && this.client.isReady();
   }
 
-  ownsJid(jid: string): boolean {
-    return jid.startsWith('dc:');
+  ownsChatId(chatId: string): boolean {
+    return chatId.startsWith('dc:');
   }
 
   async disconnect(): Promise<void> {
@@ -192,16 +192,21 @@ export class DiscordChannel implements Channel {
     }
   }
 
-  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+  async setTyping(chatId: string, isTyping: boolean): Promise<void> {
     if (!this.client || !isTyping) return;
 
     try {
-      const channel = await this.client.channels.fetch(jid.replace(/^dc:/, ''));
+      const channel = await this.client.channels.fetch(
+        chatId.replace(/^dc:/, ''),
+      );
       if (channel && 'sendTyping' in channel) {
         await (channel as TextChannel).sendTyping();
       }
     } catch (error) {
-      logger.debug({ jid, error }, 'Discord: failed to send typing indicator');
+      logger.debug(
+        { chatId, error },
+        'Discord: failed to send typing indicator',
+      );
     }
   }
 }
