@@ -32,7 +32,7 @@ describe('task scheduler', () => {
     vi.useRealTimers();
   });
 
-  it('skips due tasks when the chat session does not exist', async () => {
+  it('pauses due tasks when the chat session does not exist', async () => {
     saveActiveTasks([
       {
         id: 'task-missing-session',
@@ -49,7 +49,7 @@ describe('task scheduler', () => {
       },
     ]);
 
-    const enqueueTask = vi.fn();
+    const enqueueTask = vi.fn((_chatId, _taskId, fn) => void fn());
     startSchedulerLoop({
       queue: { enqueueTask } as any,
       onProcess: () => {},
@@ -57,7 +57,8 @@ describe('task scheduler', () => {
     });
 
     await vi.advanceTimersByTimeAsync(10);
-    expect(enqueueTask).toHaveBeenCalled();
+    const [task] = (await import('./store.js')).loadActiveTasks();
+    expect(task?.status).toBe('paused');
   });
 
   it('computeNextRun anchors interval tasks to scheduled time to prevent drift', () => {
