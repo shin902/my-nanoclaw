@@ -98,7 +98,7 @@ function buildVolumeMounts(): VolumeMount[] {
   mounts.push({
     hostPath: projectRoot,
     containerPath: '/workspace/project',
-    readonly: false,
+    readonly: true,
   });
 
   return mounts;
