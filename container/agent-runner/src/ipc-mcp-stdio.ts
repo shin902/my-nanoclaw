@@ -17,6 +17,8 @@ function safeChatId(chatId: string): string {
 const chatId = process.env.NANOCLAW_CHAT_ID!.trim();
 const SAFE_CHAT_ID = safeChatId(chatId);
 const CHAT_MESSAGES_DIR = path.join(MESSAGES_DIR, SAFE_CHAT_ID);
+const CHAT_TASKS_DIR = path.join(TASKS_DIR, SAFE_CHAT_ID);
+const TASK_REQUESTS_DIR = path.join(CHAT_TASKS_DIR, 'requests');
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -92,7 +94,7 @@ server.tool(
     }
 
     const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    writeIpcFile(TASKS_DIR, {
+    writeIpcFile(TASK_REQUESTS_DIR, {
       type: 'schedule_task',
       taskId,
       chatId,
@@ -111,8 +113,7 @@ server.tool(
 
 server.tool('list_tasks', 'スケジュールされたタスクを一覧表示します。', {}, async () => {
   const tasksFile = path.join(
-    TASKS_DIR,
-    SAFE_CHAT_ID,
+    CHAT_TASKS_DIR,
     'current_tasks.json',
   );
 
@@ -149,7 +150,7 @@ server.tool(
   'スケジュールされたタスクを一時停止します。',
   { task_id: z.string().describe('一時停止するタスクの ID') },
   async (args) => {
-    writeIpcFile(TASKS_DIR, {
+    writeIpcFile(TASK_REQUESTS_DIR, {
       type: 'pause_task',
       taskId: args.task_id,
       timestamp: new Date().toISOString(),
@@ -166,7 +167,7 @@ server.tool(
   '一時停止中のタスクを再開します。',
   { task_id: z.string().describe('再開するタスクの ID') },
   async (args) => {
-    writeIpcFile(TASKS_DIR, {
+    writeIpcFile(TASK_REQUESTS_DIR, {
       type: 'resume_task',
       taskId: args.task_id,
       timestamp: new Date().toISOString(),
@@ -183,7 +184,7 @@ server.tool(
   'スケジュールされたタスクをキャンセルして削除します。',
   { task_id: z.string().describe('削除するタスクの ID') },
   async (args) => {
-    writeIpcFile(TASKS_DIR, {
+    writeIpcFile(TASK_REQUESTS_DIR, {
       type: 'cancel_task',
       taskId: args.task_id,
       timestamp: new Date().toISOString(),
@@ -237,7 +238,7 @@ server.tool(
     if (args.schedule_type !== undefined) data.schedule_type = args.schedule_type;
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;
 
-    writeIpcFile(TASKS_DIR, data);
+    writeIpcFile(TASK_REQUESTS_DIR, data);
 
     return {
       content: [{ type: 'text' as const, text: `タスク ${args.task_id} の更新をリクエストしました。` }],

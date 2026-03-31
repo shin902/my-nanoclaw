@@ -59,6 +59,13 @@ function computeNextRun(
   return at.toISOString();
 }
 
+function resolveChatId(
+  payloadChatId: string | undefined,
+  trustedChatId: string | undefined,
+): string | null {
+  return trustedChatId ?? payloadChatId ?? null;
+}
+
 export async function processTaskIpc(
   data: {
     type: string;
@@ -74,25 +81,29 @@ export async function processTaskIpc(
     resumeAt?: string | null;
   },
   deps: IpcDeps,
+  trustedChatId?: string,
 ): Promise<void> {
   switch (data.type) {
-    case 'send_message':
-      if (data.chatId && data.text) {
-        const session = getSession(data.chatId);
+    case 'send_message': {
+      const chatId = resolveChatId(data.chatId, trustedChatId);
+      if (chatId && data.text) {
+        const session = getSession(chatId);
         if (!session) {
           logger.warn(
-            { chatId: data.chatId },
+            { chatId },
             'Ignoring IPC send_message for unknown chat',
           );
           break;
         }
-        await deps.sendMessage(data.chatId, data.text);
+        await deps.sendMessage(chatId, data.text);
       }
       break;
+    }
 
     case 'update_config': {
-      if (!data.chatId) break;
-      const session = getSession(data.chatId);
+      const chatId = resolveChatId(data.chatId, trustedChatId);
+      if (!chatId) break;
+      const session = getSession(chatId);
       if (!session) break;
       saveSession({
         ...session,
@@ -110,18 +121,14 @@ export async function processTaskIpc(
       break;
     }
 
-    case 'schedule_task':
-      if (
-        data.chatId &&
-        data.prompt &&
-        data.schedule_type &&
-        data.schedule_value
-      ) {
+    case 'schedule_task': {
+      const chatId = resolveChatId(data.chatId, trustedChatId);
+      if (chatId && data.prompt && data.schedule_type && data.schedule_value) {
         const task: ScheduledTask = {
           id:
             data.taskId ||
             `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          chat_id: data.chatId,
+          chat_id: chatId,
           prompt: data.prompt,
           schedule_type: data.schedule_type as 'cron' | 'interval' | 'once',
           schedule_value: data.schedule_value,
@@ -138,6 +145,7 @@ export async function processTaskIpc(
         upsertTask(task);
       }
       break;
+    }
 
     case 'pause_task':
       if (data.taskId) updateTask(data.taskId, { status: 'paused' });
@@ -238,7 +246,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 await deps.sendMessage(trustedChatId, data.text);
               }
             } else {
-              await processTaskIpc(data, deps);
+              await processTaskIpc(data, deps, trustedChatId);
             }
             fs.unlinkSync(filePath);
           } catch (err) {
@@ -274,39 +282,53 @@ export function startIpcWatcher(deps: IpcDeps): void {
     }
 
     if (fs.existsSync(tasksDir)) {
-      for (const file of fs
-        .readdirSync(tasksDir)
-        .filter((name) => name.endsWith('.json'))) {
-        const filePath = path.join(tasksDir, file);
-        try {
-          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          await processTaskIpc(data, deps);
-          fs.unlinkSync(filePath);
-        } catch (err) {
-          logger.error({ filePath, err }, 'Error processing IPC file');
+      for (const namespace of fs.readdirSync(tasksDir)) {
+        const namespaceDir = path.join(tasksDir, namespace);
+        if (!fs.statSync(namespaceDir).isDirectory()) continue;
+
+        const trustedChatId = decodeChatNamespace(namespace);
+        if (!trustedChatId) {
+          logger.warn({ namespace }, 'Skipping invalid IPC task namespace');
+          continue;
+        }
+
+        const requestsDir = path.join(namespaceDir, 'requests');
+        if (!fs.existsSync(requestsDir)) continue;
+
+        for (const file of fs
+          .readdirSync(requestsDir)
+          .filter((name) => name.endsWith('.json'))) {
+          const filePath = path.join(requestsDir, file);
           try {
-            const errorsDir = path.join(tasksDir, 'errors');
-            fs.mkdirSync(errorsDir, { recursive: true });
-            const errorPath = path.join(errorsDir, file);
-            fs.renameSync(filePath, errorPath);
-            logger.info(
-              { filePath, errorPath },
-              'Moved failed IPC file to errors directory',
-            );
-          } catch (moveErr) {
-            logger.error(
-              { filePath, moveErr },
-              'Failed to move bad IPC file, deleting instead',
-            );
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            await processTaskIpc(data, deps, trustedChatId);
+            fs.unlinkSync(filePath);
+          } catch (err) {
+            logger.error({ filePath, err }, 'Error processing IPC file');
             try {
-              if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-              }
-            } catch (unlinkErr) {
-              logger.error(
-                { filePath, unlinkErr },
-                'Failed to delete bad IPC file after move failure',
+              const errorsDir = path.join(requestsDir, 'errors');
+              fs.mkdirSync(errorsDir, { recursive: true });
+              const errorPath = path.join(errorsDir, file);
+              fs.renameSync(filePath, errorPath);
+              logger.info(
+                { filePath, errorPath },
+                'Moved failed IPC file to errors directory',
               );
+            } catch (moveErr) {
+              logger.error(
+                { filePath, moveErr },
+                'Failed to move bad IPC file, deleting instead',
+              );
+              try {
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                }
+              } catch (unlinkErr) {
+                logger.error(
+                  { filePath, unlinkErr },
+                  'Failed to delete bad IPC file after move failure',
+                );
+              }
             }
           }
         }
