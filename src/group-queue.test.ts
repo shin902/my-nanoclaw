@@ -31,6 +31,8 @@ describe('GroupQueue', () => {
   });
 
   afterEach(() => {
+    void queue.shutdown(0);
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

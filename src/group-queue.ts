@@ -25,6 +25,7 @@ interface GroupState {
   process: ChildProcess | null;
   containerName: string | null;
   retryCount: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class GroupQueue {
@@ -48,6 +49,7 @@ export class GroupQueue {
         process: null,
         containerName: null,
         retryCount: 0,
+        retryTimer: null,
       };
       this.groups.set(chatId, state);
     }
@@ -212,6 +214,7 @@ export class GroupQueue {
       if (this.processMessagesFn) {
         const success = await this.processMessagesFn(chatId);
         if (success) {
+          this.clearRetryTimer(state);
           state.retryCount = 0;
         } else {
           this.scheduleRetry(chatId, state);
@@ -258,6 +261,7 @@ export class GroupQueue {
   }
 
   private scheduleRetry(chatId: string, state: GroupState): void {
+    this.clearRetryTimer(state);
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
       logger.error(
@@ -273,12 +277,19 @@ export class GroupQueue {
       { chatId, retryCount: state.retryCount, delayMs },
       'Scheduling retry with backoff',
     );
-    const timer = setTimeout(() => {
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null;
       if (!this.shuttingDown) {
         this.enqueueMessageCheck(chatId);
       }
     }, delayMs);
-    timer.unref?.();
+    state.retryTimer.unref?.();
+  }
+
+  private clearRetryTimer(state: GroupState): void {
+    if (!state.retryTimer) return;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
   }
 
   private drainGroup(chatId: string): void {
@@ -348,6 +359,7 @@ export class GroupQueue {
     // これにより、WhatsApp の再接続による再起動が、作業中のエージェントを殺すのを防ぐ。
     const activeContainers: string[] = [];
     for (const [chatId, state] of this.groups) {
+      this.clearRetryTimer(state);
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }
