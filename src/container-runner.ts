@@ -553,12 +553,38 @@ export function writeTasksSnapshot(
     next_run: string | null;
   }>,
 ): void {
-  const ipcDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(ipcDir, 'current_tasks.json'),
-    JSON.stringify(tasks, null, 2),
-  );
+  const tasksDir = path.join(DATA_DIR, 'ipc', 'tasks');
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  const tasksByChat = new Map<string, typeof tasks>();
+  for (const task of tasks) {
+    const chatTasks = tasksByChat.get(task.chatId) || [];
+    chatTasks.push(task);
+    tasksByChat.set(task.chatId, chatTasks);
+  }
+
+  for (const entry of fs.readdirSync(tasksDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const filePath = path.join(tasksDir, entry.name, 'current_tasks.json');
+    let existingChatId: string;
+    try {
+      existingChatId = decodeURIComponent(entry.name);
+    } catch {
+      continue;
+    }
+    if (fs.existsSync(filePath) && !tasksByChat.has(existingChatId)) {
+      fs.unlinkSync(filePath);
+    }
+  }
+
+  for (const [chatId, chatTasks] of tasksByChat.entries()) {
+    const snapshotDir = path.join(tasksDir, safeChatId(chatId));
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    const filePath = path.join(snapshotDir, 'current_tasks.json');
+    const tempPath = `${filePath}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(chatTasks, null, 2));
+    fs.renameSync(tempPath, filePath);
+  }
 }
 
 export interface AvailableChat {

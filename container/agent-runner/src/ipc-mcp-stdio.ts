@@ -104,15 +104,18 @@ server.tool(
 );
 
 server.tool('list_tasks', 'スケジュールされたタスクを一覧表示します。', {}, async () => {
-  const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+  const tasksFile = path.join(
+    TASKS_DIR,
+    encodeURIComponent(chatId),
+    'current_tasks.json',
+  );
 
   try {
     if (!fs.existsSync(tasksFile)) {
       return { content: [{ type: 'text' as const, text: 'スケジュールされたタスクは見つかりませんでした。' }] };
     }
 
-    const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
-    const tasks = allTasks.filter((task: { chatId: string }) => task.chatId === chatId);
+    const tasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
 
     if (tasks.length === 0) {
       return { content: [{ type: 'text' as const, text: 'スケジュールされたタスクは見つかりませんでした。' }] };
