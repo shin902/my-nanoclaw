@@ -326,22 +326,22 @@ export class GroupQueue {
       this.waitingGroups.length > 0 &&
       this.activeCount < MAX_CONCURRENT_CONTAINERS
     ) {
-      const nextJid = this.waitingGroups.shift()!;
-      const state = this.getGroup(nextJid);
+      const nextChatId = this.waitingGroups.shift()!;
+      const state = this.getGroup(nextChatId);
 
       // メッセージよりタスクを優先
       if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
-        this.runTask(nextJid, task).catch((err) =>
+        this.runTask(nextChatId, task).catch((err) =>
           logger.error(
-            { chatId: nextJid, taskId: task.id, err },
+            { chatId: nextChatId, taskId: task.id, err },
             'Unhandled error in runTask (waiting)',
           ),
         );
       } else if (state.pendingMessages) {
-        this.runForGroup(nextJid, 'drain').catch((err) =>
+        this.runForGroup(nextChatId, 'drain').catch((err) =>
           logger.error(
-            { chatId: nextJid, err },
+            { chatId: nextChatId, err },
             'Unhandled error in runForGroup (waiting)',
           ),
         );
