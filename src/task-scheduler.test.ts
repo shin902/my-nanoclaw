@@ -29,6 +29,8 @@ describe('task scheduler', () => {
   });
 
   afterEach(() => {
+    _resetSchedulerLoopForTests();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
