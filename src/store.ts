@@ -9,7 +9,9 @@ const CHATS_DATA_DIR = path.join(DATA_DIR, 'chats');
 const TASKS_DATA_DIR = path.join(DATA_DIR, 'tasks');
 const ACTIVE_TASKS_PATH = path.join(TASKS_DATA_DIR, 'active.json');
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL = 'claude-sonnet-4-6';
+let sessionsCache: Record<string, ChatSession> | null = null;
+let sessionsCacheMtimeMs: number | null = null;
 
 function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -59,20 +61,38 @@ function atomicWriteJson(filePath: string, value: unknown): void {
 }
 
 function loadSessionsMap(): Record<string, ChatSession> {
-  if (!fs.existsSync(SESSIONS_PATH)) return {};
+  if (!fs.existsSync(SESSIONS_PATH)) {
+    sessionsCache = {};
+    sessionsCacheMtimeMs = null;
+    return {};
+  }
+
+  const mtimeMs = fs.statSync(SESSIONS_PATH).mtimeMs;
+  if (sessionsCache && sessionsCacheMtimeMs === mtimeMs) {
+    return sessionsCache;
+  }
 
   try {
     const raw = fs.readFileSync(SESSIONS_PATH, 'utf-8');
-    if (!raw.trim()) return {};
+    if (!raw.trim()) {
+      sessionsCache = {};
+      sessionsCacheMtimeMs = mtimeMs;
+      return {};
+    }
     const parsed = JSON.parse(raw) as Record<string, Partial<ChatSession>>;
-    return Object.fromEntries(
+    const sessions = Object.fromEntries(
       Object.entries(parsed).map(([chatId, session]) => [
         chatId,
         normalizeSession(chatId, session),
       ]),
     );
+    sessionsCache = sessions;
+    sessionsCacheMtimeMs = mtimeMs;
+    return sessions;
   } catch (err) {
     logger.error({ err, filePath: SESSIONS_PATH }, 'Failed to load sessions');
+    sessionsCache = {};
+    sessionsCacheMtimeMs = mtimeMs;
     return {};
   }
 }
@@ -122,6 +142,8 @@ export function saveSession(session: ChatSession): void {
   const sessions = loadSessionsMap();
   sessions[session.chatId] = normalizeSession(session.chatId, session);
   atomicWriteJson(SESSIONS_PATH, sessions);
+  sessionsCache = { ...sessions };
+  sessionsCacheMtimeMs = fs.statSync(SESSIONS_PATH).mtimeMs;
 }
 
 export function appendEvent(chatId: string, event: GroupEvent): void {
@@ -237,4 +259,8 @@ export const _internals = {
   SESSIONS_PATH,
   chatEventsPath,
   taskLogPath,
+  resetSessionsCache: () => {
+    sessionsCache = null;
+    sessionsCacheMtimeMs = null;
+  },
 };

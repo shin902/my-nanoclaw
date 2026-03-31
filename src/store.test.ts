@@ -52,6 +52,7 @@ describe('store', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    _internals.resetSessionsCache();
   });
 
   it('sanitizes chat ids for filesystem paths', () => {
@@ -148,6 +149,33 @@ describe('store', () => {
     expect(loadSessions()).toEqual([
       expect.objectContaining({ chatId: 'dc:1', name: 'group-a' }),
     ]);
+  });
+
+  it('reuses the cached sessions map until the file changes', () => {
+    saveSession({
+      chatId: 'dc:1',
+      name: 'group-a',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const readSpy = vi.spyOn(fs, 'readFileSync');
+
+    expect(getSession('dc:1')?.chatId).toBe('dc:1');
+    expect(getSession('dc:1')?.chatId).toBe('dc:1');
+    expect(readSpy).not.toHaveBeenCalled();
+
+    fs.writeFileSync(
+      _internals.SESSIONS_PATH,
+      JSON.stringify({
+        'dc:1': {
+          name: 'group-a',
+          model: 'claude-opus-4-6',
+        },
+      }),
+    );
+
+    expect(getSession('dc:1')?.model).toBe('claude-opus-4-6');
+    expect(readSpy).toHaveBeenCalled();
   });
 
   it('loads and saves active tasks', () => {
