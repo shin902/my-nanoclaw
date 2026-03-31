@@ -351,7 +351,7 @@ async function runQuery(
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
-const stream = new MessageStream();
+  const stream = new MessageStream();
   stream.push(prompt);
 
   // クエリ実行中に追撃メッセージと _close センチネルを求めて IPC をポーリング
