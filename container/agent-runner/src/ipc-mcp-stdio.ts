@@ -146,17 +146,12 @@ server.tool(
 );
 
 server.tool('list_tasks', 'スケジュールされたタスクを一覧表示します。', {}, async () => {
-  const tasksFile = path.join(
-    CHAT_TASKS_DIR,
-    'current_tasks.json',
-  );
-
   try {
-    if (!fs.existsSync(tasksFile)) {
+    if (!fs.existsSync(CURRENT_TASKS_FILE)) {
       return { content: [{ type: 'text' as const, text: 'スケジュールされたタスクは見つかりませんでした。' }] };
     }
 
-    const tasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
+    const tasks = JSON.parse(fs.readFileSync(CURRENT_TASKS_FILE, 'utf-8'));
 
     if (tasks.length === 0) {
       return { content: [{ type: 'text' as const, text: 'スケジュールされたタスクは見つかりませんでした。' }] };
@@ -240,7 +235,11 @@ server.tool(
     schedule_value: z.string().optional(),
   },
   async (args) => {
-    if (args.schedule_type === 'cron' || (!args.schedule_type && args.schedule_value)) {
+    const existingTask = readCurrentTasks().find((task) => task.id === args.task_id);
+    const effectiveScheduleType =
+      args.schedule_type ?? existingTask?.schedule_type ?? null;
+
+    if (args.schedule_type === 'cron') {
       if (args.schedule_value) {
         try {
           CronExpressionParser.parse(args.schedule_value);
@@ -260,6 +259,31 @@ server.tool(
           content: [{ type: 'text' as const, text: `無効なインターバルです: "${args.schedule_value}"。` }],
           isError: true,
         };
+      }
+    }
+
+    if (args.schedule_value) {
+      if (effectiveScheduleType === 'once') {
+        if (!parseLocalOnceTimestamp(args.schedule_value)) {
+          return invalidOnceTimestampResult(args.schedule_value);
+        }
+      } else if (!args.schedule_type && effectiveScheduleType === 'cron') {
+        try {
+          CronExpressionParser.parse(args.schedule_value);
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: `無効な cron です: "${args.schedule_value}"。` }],
+            isError: true,
+          };
+        }
+      } else if (!args.schedule_type && effectiveScheduleType === 'interval') {
+        const ms = parseInt(args.schedule_value, 10);
+        if (isNaN(ms) || ms <= 0) {
+          return {
+            content: [{ type: 'text' as const, text: `無効なインターバルです: "${args.schedule_value}"。` }],
+            isError: true,
+          };
+        }
       }
     }
 
