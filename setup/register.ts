@@ -34,6 +34,10 @@ export function parseArgs(args: string[]): RegisterArgs {
     }
   }
 
+  result.chatId = result.chatId.trim();
+  result.name = result.name.trim();
+  result.assistantName = result.assistantName.trim() || 'Andy';
+
   return result;
 }
 

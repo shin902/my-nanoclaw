@@ -68,6 +68,43 @@ describe('setup/register', () => {
     });
   });
 
+  it('trims parsed values and rejects whitespace-only required args', async () => {
+    expect(
+      parseArgs([
+        '--chat-id',
+        '  dc:trim  ',
+        '--name',
+        '  main  ',
+        '--assistant-name',
+        '  Nano  ',
+      ]),
+    ).toEqual({
+      chatId: 'dc:trim',
+      name: 'main',
+      assistantName: 'Nano',
+    });
+
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation(((code?: string | number | null) => {
+        throw new Error(`process.exit:${code ?? ''}`);
+      }) as never);
+
+    await expect(
+      run(['--chat-id', '   ', '--name', 'main']),
+    ).rejects.toThrow('process.exit:4');
+
+    expect(emitStatus).toHaveBeenCalledWith(
+      'REGISTER_CHANNEL',
+      expect.objectContaining({
+        STATUS: 'failed',
+        ERROR: 'missing_required_args',
+      }),
+    );
+
+    exitSpy.mockRestore();
+  });
+
   it('writes the session and updates workspace files', async () => {
     fs.mkdirSync(path.join(testPaths.root, 'groups', 'global'), {
       recursive: true,
