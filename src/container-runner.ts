@@ -54,6 +54,37 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+let bundledSkillsSynced = false;
+
+function syncBundledSkills(
+  skillsSrc: string,
+  skillsDst: string,
+  force = false,
+): void {
+  if (bundledSkillsSynced && !force) return;
+  if (!fs.existsSync(skillsSrc)) {
+    bundledSkillsSynced = true;
+    return;
+  }
+
+  fs.mkdirSync(skillsDst, { recursive: true });
+  for (const skillDir of fs.readdirSync(skillsSrc)) {
+    const srcDir = path.join(skillsSrc, skillDir);
+    if (!fs.statSync(srcDir).isDirectory()) continue;
+    const dstDir = path.join(skillsDst, skillDir);
+    try {
+      fs.cpSync(srcDir, dstDir, { recursive: true });
+    } catch (err) {
+      logger.warn(
+        { srcDir, dstDir, err },
+        'Failed to sync bundled skill directory',
+      );
+    }
+  }
+
+  bundledSkillsSynced = true;
+}
+
 function buildVolumeMounts(): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -73,14 +104,7 @@ function buildVolumeMounts(): VolumeMount[] {
   });
 
   fs.mkdirSync(path.join(workspaceClaudeDir, 'projects'), { recursive: true });
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
-    }
-  }
+  syncBundledSkills(skillsSrc, skillsDst);
   mounts.push({
     hostPath: workspaceClaudeDir,
     containerPath: '/home/node/.claude',
