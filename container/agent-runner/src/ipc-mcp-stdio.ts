@@ -14,11 +14,21 @@ function safeChatId(chatId: string): string {
   return trimmed ? encodeURIComponent(trimmed) : 'chat';
 }
 
+function parseLocalOnceTimestamp(value: string): Date | null {
+  if (/[Zz]$/.test(value) || /[+-]\d{2}:\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 const chatId = process.env.NANOCLAW_CHAT_ID!.trim();
 const SAFE_CHAT_ID = safeChatId(chatId);
 const CHAT_MESSAGES_DIR = path.join(MESSAGES_DIR, SAFE_CHAT_ID);
 const CHAT_TASKS_DIR = path.join(TASKS_DIR, SAFE_CHAT_ID);
 const TASK_REQUESTS_DIR = path.join(CHAT_TASKS_DIR, 'requests');
+const CURRENT_TASKS_FILE = path.join(CHAT_TASKS_DIR, 'current_tasks.json');
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -30,6 +40,33 @@ function writeIpcFile(dir: string, data: object): string {
   fs.renameSync(tempPath, filepath);
 
   return filename;
+}
+
+function readCurrentTasks(): Array<{ id: string; schedule_type: string }> {
+  if (!fs.existsSync(CURRENT_TASKS_FILE)) {
+    return [];
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(CURRENT_TASKS_FILE, 'utf-8')) as Array<{
+      id: string;
+      schedule_type: string;
+    }>;
+  } catch {
+    return [];
+  }
+}
+
+function invalidOnceTimestampResult(value: string) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `無効な once の時刻です: "${value}"。タイムゾーンなしのローカル時刻を指定してください。`,
+      },
+    ],
+    isError: true,
+  };
 }
 
 const server = new McpServer({
@@ -86,11 +123,8 @@ server.tool(
           isError: true,
         };
       }
-    } else if (/[Zz]$/.test(args.schedule_value) || /[+-]\d{2}:\d{2}$/.test(args.schedule_value)) {
-      return {
-        content: [{ type: 'text' as const, text: `once の時刻はローカル時刻で指定してください: "${args.schedule_value}"。` }],
-        isError: true,
-      };
+    } else if (!parseLocalOnceTimestamp(args.schedule_value)) {
+      return invalidOnceTimestampResult(args.schedule_value);
     }
 
     const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
