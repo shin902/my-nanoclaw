@@ -12,7 +12,7 @@ interface RegisterArgs {
   assistantName: string;
 }
 
-function parseArgs(args: string[]): RegisterArgs {
+export function parseArgs(args: string[]): RegisterArgs {
   const result: RegisterArgs = {
     chatId: '',
     name: '',
