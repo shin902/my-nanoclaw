@@ -3,7 +3,7 @@ import path from 'path';
 
 import { DATA_DIR, WORKSPACE_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
-import { saveSession } from '../src/store.js';
+import { DEFAULT_MODEL, saveSession } from '../src/store.js';
 import { emitStatus } from './status.js';
 
 interface RegisterArgs {
@@ -63,6 +63,7 @@ export async function run(args: string[]): Promise<void> {
   saveSession({
     chatId: parsed.chatId,
     name: parsed.name,
+    model: DEFAULT_MODEL,
   });
 
   let nameUpdated = false;

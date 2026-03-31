@@ -144,6 +144,7 @@ describe('store', () => {
     saveSession({
       chatId: 'dc:1',
       name: 'group-a',
+      model: 'claude-sonnet-4-6',
     });
 
     expect(loadSessions()).toEqual([

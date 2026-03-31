@@ -38,7 +38,7 @@ export interface ChatSession {
   name?: string;
   sessionId?: string;
   resumeAt?: string;
-  model?: string;
+  model: string;
   containerConfig?: ContainerConfig;
 }
 

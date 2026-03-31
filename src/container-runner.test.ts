@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import fs from 'fs';
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -34,6 +35,7 @@ vi.mock('fs', async () => {
       existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
       writeFileSync: vi.fn(),
+      renameSync: vi.fn(),
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
@@ -75,12 +77,18 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { ContainerOutput, runContainerAgent } from './container-runner.js';
+import {
+  ContainerOutput,
+  runContainerAgent,
+  writeTasksSnapshot,
+} from './container-runner.js';
+import { spawn } from 'child_process';
 import type { ChatSession } from './types.js';
 
 const testSession: ChatSession = {
   chatId: 'dc:test',
   name: 'Test Chat',
+  model: 'claude-sonnet-4-6',
 };
 
 const testInput = {
@@ -100,6 +108,7 @@ function emitOutputMarker(
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     fakeProc = createFakeProcess();
   });
 
@@ -176,5 +185,77 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('mounts shared IPC read-only when disabled in container config', async () => {
+    const session: ChatSession = {
+      ...testSession,
+      containerConfig: {
+        sharedIpcWriteAccess: false,
+      },
+    };
+    const resultPromise = runContainerAgent(session, testInput, () => {});
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done',
+      newSessionId: 'session-789',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    expect(spawn).toHaveBeenCalled();
+    const [, args] = vi.mocked(spawn).mock.calls[0];
+    expect(args).toContain('/tmp/nanoclaw-test-data/ipc:/workspace/ipc:ro');
+    expect(args).toContain(
+      '/tmp/nanoclaw-test-data/ipc/messages/dc%3Atest:/workspace/ipc/messages/dc%3Atest',
+    );
+    expect(args).toContain(
+      '/tmp/nanoclaw-test-data/ipc/tasks/dc%3Atest:/workspace/ipc/tasks/dc%3Atest',
+    );
+    expect(args).toContain(
+      '/tmp/nanoclaw-test-data/ipc/input/dc%3Atest:/workspace/ipc/input/dc%3Atest',
+    );
+  });
+
+  it('writes only the requested chat task snapshot', () => {
+    const fsModule = vi.mocked(fs);
+    fsModule.existsSync.mockReturnValue(false);
+
+    writeTasksSnapshot(
+      [
+        {
+          id: 'task-a',
+          chatId: 'dc:test',
+          prompt: 'hello',
+          schedule_type: 'once',
+          schedule_value: '2026-04-01T09:00:00',
+          status: 'active',
+          next_run: '2026-04-01T09:00:00.000Z',
+        },
+        {
+          id: 'task-b',
+          chatId: 'dc:other',
+          prompt: 'world',
+          schedule_type: 'once',
+          schedule_value: '2026-04-01T10:00:00',
+          status: 'active',
+          next_run: '2026-04-01T10:00:00.000Z',
+        },
+      ],
+      'dc:test',
+    );
+
+    expect(fsModule.readdirSync).not.toHaveBeenCalled();
+    expect(fsModule.writeFileSync).toHaveBeenCalledWith(
+      '/tmp/nanoclaw-test-data/ipc/tasks/dc%3Atest/current_tasks.json.tmp',
+      expect.stringContaining('"id": "task-a"'),
+    );
+    expect(fsModule.writeFileSync).not.toHaveBeenCalledWith(
+      expect.stringContaining('dc%3Aother/current_tasks.json.tmp'),
+      expect.anything(),
+    );
   });
 });

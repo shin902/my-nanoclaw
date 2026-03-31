@@ -130,7 +130,7 @@ async function runTask(
         prompt: task.prompt,
         sessionId,
         chatId: task.chat_id,
-        model: session.model || 'claude-sonnet-4-6',
+        model: session.model,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
