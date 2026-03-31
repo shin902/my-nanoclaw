@@ -603,9 +603,26 @@ export function writeTasksSnapshot(
     status: string;
     next_run: string | null;
   }>,
+  chatId?: string,
 ): void {
   const tasksDir = path.join(DATA_DIR, 'ipc', 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
+  if (chatId) {
+    const snapshotDir = path.join(tasksDir, safeChatId(chatId));
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    const filePath = path.join(snapshotDir, 'current_tasks.json');
+    const chatTasks = tasks.filter((task) => task.chatId === chatId);
+    if (chatTasks.length === 0) {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      return;
+    }
+    const tempPath = `${filePath}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(chatTasks, null, 2));
+    fs.renameSync(tempPath, filePath);
+    return;
+  }
 
   const tasksByChat = new Map<string, typeof tasks>();
   for (const task of tasks) {
@@ -614,22 +631,8 @@ export function writeTasksSnapshot(
     tasksByChat.set(task.chatId, chatTasks);
   }
 
-  for (const entry of fs.readdirSync(tasksDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const filePath = path.join(tasksDir, entry.name, 'current_tasks.json');
-    let existingChatId: string;
-    try {
-      existingChatId = decodeURIComponent(entry.name);
-    } catch {
-      continue;
-    }
-    if (fs.existsSync(filePath) && !tasksByChat.has(existingChatId)) {
-      fs.unlinkSync(filePath);
-    }
-  }
-
-  for (const [chatId, chatTasks] of tasksByChat.entries()) {
-    const snapshotDir = path.join(tasksDir, safeChatId(chatId));
+  for (const [nextChatId, chatTasks] of tasksByChat.entries()) {
+    const snapshotDir = path.join(tasksDir, safeChatId(nextChatId));
     fs.mkdirSync(snapshotDir, { recursive: true });
     const filePath = path.join(snapshotDir, 'current_tasks.json');
     const tempPath = `${filePath}.tmp`;

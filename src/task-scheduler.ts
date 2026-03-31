@@ -104,6 +104,7 @@ async function runTask(
       status: t.status,
       next_run: t.next_run,
     })),
+    task.chat_id,
   );
 
   let result: string | null = null;

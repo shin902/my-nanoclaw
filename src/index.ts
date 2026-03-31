@@ -76,6 +76,7 @@ async function runAgent(
       status: task.status,
       next_run: task.next_run,
     })),
+    chatId,
   );
   writeGroupsSnapshot(getAvailableChats());
 
@@ -86,7 +87,7 @@ async function runAgent(
         prompt,
         sessionId: session.sessionId,
         chatId,
-        model: session.model || 'claude-sonnet-4-6',
+        model: session.model,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
