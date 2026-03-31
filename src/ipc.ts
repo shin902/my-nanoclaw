@@ -66,6 +66,30 @@ function resolveChatId(
   return trustedChatId ?? payloadChatId ?? null;
 }
 
+function isTaskAuthorized(
+  taskId: string,
+  trustedChatId: string | undefined,
+): boolean {
+  if (!trustedChatId) {
+    return true;
+  }
+
+  const task = getTaskById(taskId);
+  if (!task) {
+    return false;
+  }
+
+  if (task.chat_id !== trustedChatId) {
+    logger.warn(
+      { taskId, trustedChatId, taskChatId: task.chat_id },
+      'Ignoring IPC task update outside trusted chat namespace',
+    );
+    return false;
+  }
+
+  return true;
+}
+
 export async function processTaskIpc(
   data: {
     type: string;
@@ -89,10 +113,7 @@ export async function processTaskIpc(
       if (chatId && data.text) {
         const session = getSession(chatId);
         if (!session) {
-          logger.warn(
-            { chatId },
-            'Ignoring IPC send_message for unknown chat',
-          );
+          logger.warn({ chatId }, 'Ignoring IPC send_message for unknown chat');
           break;
         }
         await deps.sendMessage(chatId, data.text);
@@ -148,19 +169,25 @@ export async function processTaskIpc(
     }
 
     case 'pause_task':
-      if (data.taskId) updateTask(data.taskId, { status: 'paused' });
+      if (data.taskId && isTaskAuthorized(data.taskId, trustedChatId)) {
+        updateTask(data.taskId, { status: 'paused' });
+      }
       break;
 
     case 'resume_task':
-      if (data.taskId) updateTask(data.taskId, { status: 'active' });
+      if (data.taskId && isTaskAuthorized(data.taskId, trustedChatId)) {
+        updateTask(data.taskId, { status: 'active' });
+      }
       break;
 
     case 'cancel_task':
-      if (data.taskId) deleteTask(data.taskId);
+      if (data.taskId && isTaskAuthorized(data.taskId, trustedChatId)) {
+        deleteTask(data.taskId);
+      }
       break;
 
     case 'update_task':
-      if (data.taskId) {
+      if (data.taskId && isTaskAuthorized(data.taskId, trustedChatId)) {
         const task = getTaskById(data.taskId);
         if (!task) break;
 

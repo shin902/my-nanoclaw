@@ -24,7 +24,14 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { processTaskIpc } from './ipc.js';
-import { loadActiveTasks, saveActiveTasks } from './store.js';
+import {
+  getTaskById,
+  loadActiveTasks,
+  saveActiveTasks,
+  saveSession,
+  getSession,
+} from './store.js';
+import type { ScheduledTask } from './types.js';
 
 const deps = {
   sendMessage: vi.fn(async () => {}),
@@ -59,5 +66,74 @@ describe('ipc', () => {
         chat_id: 'dc:trusted',
       }),
     ]);
+  });
+
+  it('ignores task mutations outside the trusted chat namespace', async () => {
+    const tasks: ScheduledTask[] = [
+      {
+        id: 'task-a',
+        chat_id: 'dc:trusted',
+        prompt: 'trusted',
+        schedule_type: 'once',
+        schedule_value: '2026-04-01T10:00:00.000Z',
+        context_mode: 'isolated',
+        next_run: '2026-04-01T10:00:00.000Z',
+        last_run: null,
+        last_result: null,
+        status: 'active',
+        created_at: '2026-04-01T00:00:00.000Z',
+      },
+      {
+        id: 'task-b',
+        chat_id: 'dc:other',
+        prompt: 'other',
+        schedule_type: 'once',
+        schedule_value: '2026-04-01T11:00:00.000Z',
+        context_mode: 'isolated',
+        next_run: '2026-04-01T11:00:00.000Z',
+        last_run: null,
+        last_result: null,
+        status: 'active',
+        created_at: '2026-04-01T00:00:00.000Z',
+      },
+    ];
+    saveActiveTasks(tasks);
+
+    await processTaskIpc(
+      {
+        type: 'pause_task',
+        taskId: 'task-b',
+      },
+      deps,
+      'dc:trusted',
+    );
+
+    expect(getTaskById('task-b')?.status).toBe('active');
+  });
+
+  it('applies config updates to the trusted chat namespace', async () => {
+    saveSession({
+      chatId: 'dc:trusted',
+      name: 'trusted',
+      model: 'claude-sonnet-4-6',
+    });
+    saveSession({
+      chatId: 'dc:other',
+      name: 'other',
+      model: 'claude-haiku-4-5',
+    });
+
+    await processTaskIpc(
+      {
+        type: 'update_config',
+        chatId: 'dc:other',
+        model: 'claude-opus-4-6',
+      },
+      deps,
+      'dc:trusted',
+    );
+
+    expect(getSession('dc:trusted')?.model).toBe('claude-opus-4-6');
+    expect(getSession('dc:other')?.model).toBe('claude-haiku-4-5');
   });
 });
