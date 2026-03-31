@@ -9,8 +9,14 @@ const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 
-const chatId = process.env.NANOCLAW_CHAT_ID!;
-const CHAT_MESSAGES_DIR = path.join(MESSAGES_DIR, encodeURIComponent(chatId));
+function safeChatId(chatId: string): string {
+  const trimmed = chatId.trim();
+  return trimmed ? encodeURIComponent(trimmed) : 'chat';
+}
+
+const chatId = process.env.NANOCLAW_CHAT_ID!.trim();
+const SAFE_CHAT_ID = safeChatId(chatId);
+const CHAT_MESSAGES_DIR = path.join(MESSAGES_DIR, SAFE_CHAT_ID);
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -106,7 +112,7 @@ server.tool(
 server.tool('list_tasks', 'スケジュールされたタスクを一覧表示します。', {}, async () => {
   const tasksFile = path.join(
     TASKS_DIR,
-    encodeURIComponent(chatId),
+    SAFE_CHAT_ID,
     'current_tasks.json',
   );
 
