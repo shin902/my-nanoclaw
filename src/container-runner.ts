@@ -85,13 +85,16 @@ function syncBundledSkills(
   bundledSkillsSynced = true;
 }
 
-function buildVolumeMounts(): VolumeMount[] {
+function buildVolumeMounts(session: ChatSession): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const workspaceClaudeDir = path.join(DATA_DIR, '.claude');
   const workspaceIpcDir = path.join(DATA_DIR, 'ipc');
   const skillsSrc = path.join(projectRoot, 'container', 'skills');
   const skillsDst = path.join(workspaceClaudeDir, 'skills');
+  const chatIpcNamespace = safeChatId(session.chatId);
+  const sharedIpcWriteAccess =
+    session.containerConfig?.sharedIpcWriteAccess ?? true;
 
   const groupDir = WORKSPACE_DIR;
   fs.mkdirSync(groupDir, { recursive: true });
@@ -117,8 +120,32 @@ function buildVolumeMounts(): VolumeMount[] {
   mounts.push({
     hostPath: workspaceIpcDir,
     containerPath: '/workspace/ipc',
-    readonly: false,
+    readonly: !sharedIpcWriteAccess,
   });
+  if (!sharedIpcWriteAccess) {
+    const ipcSubmounts: Array<[string, string]> = [
+      [
+        path.join(workspaceIpcDir, 'messages', chatIpcNamespace),
+        path.join('/workspace/ipc/messages', chatIpcNamespace),
+      ],
+      [
+        path.join(workspaceIpcDir, 'tasks', chatIpcNamespace),
+        path.join('/workspace/ipc/tasks', chatIpcNamespace),
+      ],
+      [
+        path.join(workspaceIpcDir, 'input', chatIpcNamespace),
+        path.join('/workspace/ipc/input', chatIpcNamespace),
+      ],
+    ];
+    for (const [hostPath, containerPath] of ipcSubmounts) {
+      fs.mkdirSync(hostPath, { recursive: true });
+      mounts.push({
+        hostPath,
+        containerPath,
+        readonly: false,
+      });
+    }
+  }
   mounts.push({
     hostPath: projectRoot,
     containerPath: '/workspace/project',
@@ -199,7 +226,7 @@ export async function runContainerAgent(
   const groupDir = WORKSPACE_DIR;
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  const mounts = buildVolumeMounts();
+  const mounts = buildVolumeMounts(session);
   const safeName = safeChatId(session.chatId).replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);

@@ -30,6 +30,7 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // デフォルト: 300000 (5分)
+  sharedIpcWriteAccess?: boolean; // デフォルト: true
 }
 
 export interface ChatSession {
