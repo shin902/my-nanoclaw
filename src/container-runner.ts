@@ -626,8 +626,9 @@ export function writeGroupsSnapshot(chats: AvailableChat[]): void {
   const ipcDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcDir, { recursive: true });
   const groupsFile = path.join(ipcDir, 'available_groups.json');
+  const tempPath = `${groupsFile}.tmp`;
   fs.writeFileSync(
-    groupsFile,
+    tempPath,
     JSON.stringify(
       {
         chats,
@@ -637,4 +638,5 @@ export function writeGroupsSnapshot(chats: AvailableChat[]): void {
       2,
     ),
   );
+  fs.renameSync(tempPath, groupsFile);
 }
