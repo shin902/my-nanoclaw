@@ -24,7 +24,7 @@ function makeRequest(
 }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { ...options, hostname: '127.0.0.1', port },
+      { ...options, agent: false, hostname: '127.0.0.1', port },
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c) => chunks.push(c));
@@ -38,6 +38,9 @@ function makeRequest(
       },
     );
     req.on('error', reject);
+    req.setTimeout(2000, () => {
+      req.destroy(new Error('request timed out'));
+    });
     req.write(body);
     req.end();
   });
@@ -65,8 +68,14 @@ describe('credential-proxy', () => {
   });
 
   afterEach(async () => {
-    await new Promise<void>((r) => proxyServer?.close(() => r()));
-    await new Promise<void>((r) => upstreamServer?.close(() => r()));
+    proxyServer?.closeAllConnections?.();
+    upstreamServer?.closeAllConnections?.();
+    if (proxyServer) {
+      await new Promise<void>((r) => proxyServer.close(() => r()));
+    }
+    if (upstreamServer) {
+      await new Promise<void>((r) => upstreamServer.close(() => r()));
+    }
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
   });
 
