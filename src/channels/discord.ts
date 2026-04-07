@@ -1,5 +1,6 @@
 import {
   Client,
+  ChannelType,
   Events,
   GatewayIntentBits,
   Message,
@@ -52,6 +53,12 @@ export class DiscordChannel implements Channel {
 
       const channelId = message.channelId;
       const chatJid = `dc:${channelId}`;
+      const isThread = message.channel.isThread();
+      const parentId =
+        isThread && 'parentId' in message.channel
+          ? message.channel.parentId
+          : null;
+      const parentJid = parentId ? `dc:${parentId}` : undefined;
       let content = message.content;
       const timestamp = message.createdAt.toISOString();
       const senderName =
@@ -142,11 +149,30 @@ export class DiscordChannel implements Channel {
         isGroup,
       );
 
-      // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) {
+      let placeType: InboundMessage['place_type'] = 'guild_text';
+      if (isThread) {
+        switch (message.channel.type) {
+          case ChannelType.PublicThread:
+            placeType = 'public_thread';
+            break;
+          case ChannelType.PrivateThread:
+            placeType = 'private_thread';
+            break;
+          default:
+            placeType = 'public_thread';
+            break;
+        }
+      }
+
+      // Only deliver full message for registered groups.
+      // Unregistered threads are allowed when their parent channel is registered,
+      // so index.ts can auto-register thread groups.
+      const registeredGroups = this.opts.registeredGroups();
+      const group = registeredGroups[chatJid];
+      const parentGroup = parentJid ? registeredGroups[parentJid] : undefined;
+      if (!group && !(isThread && parentGroup)) {
         logger.debug(
-          { chatJid, chatName },
+          { chatJid, chatName, isThread, parentJid },
           'Message from unregistered Discord channel',
         );
         return;
@@ -163,9 +189,10 @@ export class DiscordChannel implements Channel {
         content,
         timestamp,
         is_from_me: false,
-        place_type: 'guild_text',
+        place_type: placeType,
         actor_role: 'owner',
-        is_thread: false,
+        is_thread: isThread,
+        ...(parentJid ? { parent_jid: parentJid } : {}),
       };
       this.opts.onMessage(chatJid, inbound);
 

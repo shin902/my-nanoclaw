@@ -92,8 +92,15 @@ vi.mock('discord.js', () => {
   // Mock TextChannel type
   class TextChannel {}
 
+  const ChannelType = {
+    GuildText: 0,
+    PublicThread: 11,
+    PrivateThread: 12,
+  };
+
   return {
     Client: MockClient,
+    ChannelType,
     Events,
     GatewayIntentBits,
     TextChannel,
@@ -101,6 +108,7 @@ vi.mock('discord.js', () => {
 });
 
 import { DiscordChannel, DiscordChannelOpts } from './discord.js';
+import { ChannelType } from 'discord.js';
 
 // --- Test helpers ---
 
@@ -137,6 +145,9 @@ function createMessage(overrides: {
   attachments?: Map<string, any>;
   reference?: { messageId?: string };
   mentionsBotId?: boolean;
+  isThread?: boolean;
+  parentId?: string | null;
+  channelType?: number;
 }) {
   const channelId = overrides.channelId ?? '1234567890123456';
   const authorId = overrides.authorId ?? '55512345';
@@ -164,6 +175,9 @@ function createMessage(overrides: {
     guild: overrides.guildName ? { name: overrides.guildName } : null,
     channel: {
       name: overrides.channelName ?? 'general',
+      type: overrides.channelType ?? ChannelType.GuildText,
+      parentId: overrides.parentId ?? null,
+      isThread: vi.fn().mockReturnValue(overrides.isThread ?? false),
       messages: {
         fetch: vi.fn().mockResolvedValue({
           author: { username: 'Bob', displayName: 'Bob' },
@@ -299,6 +313,104 @@ describe('DiscordChannel', () => {
         true,
       );
       expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('sets thread metadata for thread messages', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const msg = createMessage({
+        channelId: '4444444444444444',
+        parentId: '1234567890123456',
+        isThread: true,
+        channelType: ChannelType.PublicThread,
+        content: 'Thread hello',
+        guildName: 'Test Server',
+        channelName: 'general-thread',
+      });
+      await triggerMessage(msg);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'dc:4444444444444444',
+        expect.objectContaining({
+          is_thread: true,
+          parent_jid: 'dc:1234567890123456',
+          place_type: 'public_thread',
+        }),
+      );
+    });
+
+    it('allows unregistered thread when parent channel is registered', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const msg = createMessage({
+        channelId: '5555555555555555',
+        parentId: '1234567890123456',
+        isThread: true,
+        channelType: ChannelType.PrivateThread,
+        content: 'Thread from unregistered chat',
+        guildName: 'Test Server',
+      });
+      await triggerMessage(msg);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'dc:5555555555555555',
+        expect.objectContaining({
+          is_thread: true,
+          parent_jid: 'dc:1234567890123456',
+          place_type: 'private_thread',
+        }),
+      );
+    });
+
+    it('drops thread message when parent channel is unregistered', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const msg = createMessage({
+        channelId: '6666666666666666',
+        parentId: '7777777777777777',
+        isThread: true,
+        channelType: ChannelType.PublicThread,
+        content: 'Unknown thread',
+        guildName: 'Other Server',
+      });
+      await triggerMessage(msg);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onChatMetadata).toHaveBeenCalledWith(
+        'dc:6666666666666666',
+        expect.any(String),
+        expect.any(String),
+        'discord',
+        true,
+      );
+    });
+
+    it('keeps guild_text place_type for non-thread messages', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const msg = createMessage({
+        content: 'Regular channel message',
+        guildName: 'Test Server',
+        isThread: false,
+        channelType: ChannelType.GuildText,
+      });
+      await triggerMessage(msg);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'dc:1234567890123456',
+        expect.objectContaining({
+          is_thread: false,
+          place_type: 'guild_text',
+        }),
+      );
     });
 
     it('ignores bot messages', async () => {
