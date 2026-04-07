@@ -82,6 +82,7 @@ export interface InboundMessage extends NewMessage {
   place_type?: PlaceType;
   actor_role?: ActorRole;
   is_thread?: boolean;
+  parent_jid?: string;
 }
 
 export interface ScheduledTask {
