@@ -5,10 +5,13 @@ import {
   createTask,
   deleteTask,
   getAllChats,
+  getAllSessions,
   getAllRegisteredGroups,
   getMessagesSince,
   getNewMessages,
+  getSession,
   getTaskById,
+  setSession,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -497,5 +500,26 @@ describe('registered group type', () => {
       const groups = getAllRegisteredGroups();
       expect(groups[jid].type).toBe(t);
     }
+  });
+});
+
+describe('session accessors', () => {
+  it('set/get round-trip keyed by chat_jid', () => {
+    setSession('group@g.us', 'session-123');
+    expect(getSession('group@g.us')).toBe('session-123');
+  });
+
+  it('getAllSessions returns map keyed by chat_jid', () => {
+    setSession('group1@g.us', 'session-1');
+    setSession('group2@g.us', 'session-2');
+
+    expect(getAllSessions()).toEqual({
+      'group1@g.us': 'session-1',
+      'group2@g.us': 'session-2',
+    });
+  });
+
+  it('returns undefined for unknown chat_jid', () => {
+    expect(getSession('unknown@g.us')).toBeUndefined();
   });
 });

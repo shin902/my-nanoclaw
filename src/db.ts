@@ -93,7 +93,7 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
+      chat_jid TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
@@ -173,6 +173,46 @@ function createSchema(database: Database.Database): void {
     );
   } catch {
     /* カラムはすでに存在します */
+  }
+
+  // sessions.chat_jid へのリネーム（既存 DB のマイグレーション）
+  try {
+    database.exec(
+      `ALTER TABLE sessions RENAME COLUMN group_folder TO chat_jid`,
+    );
+  } catch {
+    /* カラムはすでに存在するか、旧カラムが存在しません */
+  }
+
+  // 旧キー（folder）で保存されたセッションを chat_jid キーへ移行
+  try {
+    const rows = database
+      .prepare(
+        `
+        SELECT s.chat_jid AS legacy_key, s.session_id, rg.jid AS chat_jid
+        FROM sessions s
+        JOIN registered_groups rg ON rg.folder = s.chat_jid
+        WHERE rg.jid != s.chat_jid
+      `,
+      )
+      .all() as Array<{
+      legacy_key: string;
+      session_id: string;
+      chat_jid: string;
+    }>;
+
+    const upsert = database.prepare(
+      `INSERT OR REPLACE INTO sessions (chat_jid, session_id) VALUES (?, ?)`,
+    );
+    const removeLegacy = database.prepare(
+      `DELETE FROM sessions WHERE chat_jid = ?`,
+    );
+    for (const row of rows) {
+      upsert.run(row.chat_jid, row.session_id);
+      removeLegacy.run(row.legacy_key);
+    }
+  } catch {
+    /* 変換不能なレガシー行はそのまま保持します */
   }
 }
 
@@ -548,26 +588,26 @@ export function setRouterState(key: string, value: string): void {
 
 // --- セッション・アクセッサー ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(chatJid: string): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare('SELECT session_id FROM sessions WHERE chat_jid = ?')
+    .get(chatJid) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(chatJid: string, sessionId: string): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO sessions (chat_jid, session_id) VALUES (?, ?)',
+  ).run(chatJid, sessionId);
 }
 
 export function getAllSessions(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT chat_jid, session_id FROM sessions')
+    .all() as Array<{ chat_jid: string; session_id: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    result[row.chat_jid] = row.session_id;
   }
   return result;
 }
@@ -715,17 +755,6 @@ function migrateJsonState(): void {
     }
   }
 
-  // sessions.json のマイグレーション
-  const sessions = migrateFile('sessions.json') as Record<
-    string,
-    string
-  > | null;
-  if (sessions) {
-    for (const [folder, sessionId] of Object.entries(sessions)) {
-      setSession(folder, sessionId);
-    }
-  }
-
   // registered_groups.json のマイグレーション
   const groups = migrateFile('registered_groups.json') as Record<
     string,
@@ -741,6 +770,24 @@ function migrateJsonState(): void {
           'Skipping migrated registered group with invalid folder',
         );
       }
+    }
+  }
+
+  // sessions.json のマイグレーション
+  const sessions = migrateFile('sessions.json') as Record<
+    string,
+    string
+  > | null;
+  if (sessions) {
+    const groupsByJid = getAllRegisteredGroups();
+    const jidByFolder = new Map<string, string>();
+    for (const [jid, group] of Object.entries(groupsByJid)) {
+      jidByFolder.set(group.folder, jid);
+    }
+
+    for (const [sessionKey, sessionId] of Object.entries(sessions)) {
+      const chatJid = jidByFolder.get(sessionKey) ?? sessionKey;
+      setSession(chatJid, sessionId);
     }
   }
 }

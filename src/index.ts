@@ -274,7 +274,7 @@ async function runAgent(
 ): Promise<'success' | 'error'> {
   const groupType = resolveGroupType(group);
   const isPrivileged = groupType === 'main' || groupType === 'override';
-  const sessionId = sessions[group.folder];
+  const sessionId = sessions[chatJid];
 
   // コンテナが読み取るためのタスクスナップショットを更新（グループでフィルタリング）
   const tasks = getAllTasks();
@@ -300,8 +300,8 @@ async function runAgent(
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          sessions[chatJid] = output.newSessionId;
+          setSession(chatJid, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -324,8 +324,8 @@ async function runAgent(
     );
 
     if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      sessions[chatJid] = output.newSessionId;
+      setSession(chatJid, output.newSessionId);
     }
 
     if (output.status === 'error') {
