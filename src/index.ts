@@ -59,7 +59,12 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { hasPrivilege, resolveGroupType } from './group-type.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import {
+  Channel,
+  InboundMessage,
+  NewMessage,
+  RegisteredGroup,
+} from './types.js';
 import { logger } from './logger.js';
 
 // リファクタリング中の後方互換性のために再エクスポート
@@ -118,6 +123,42 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     { jid, name: group.name, folder: group.folder },
     'Group registered',
   );
+}
+
+/** @internal - テスト用にエクスポート */
+export function _persistSessionForChat(
+  state: Record<string, string>,
+  chatJid: string,
+  sessionId: string,
+  persist: (chatJid: string, sessionId: string) => void = setSession,
+): void {
+  state[chatJid] = sessionId;
+  persist(chatJid, sessionId);
+}
+
+/** @internal - テスト用にエクスポート */
+export function _autoRegisterThreadFromParent(
+  chatJid: string,
+  msg: InboundMessage,
+  groups: Record<string, RegisteredGroup>,
+  register: (jid: string, group: RegisteredGroup) => void,
+  now: () => string = () => new Date().toISOString(),
+): boolean {
+  if (groups[chatJid] || !msg.parent_jid) return true;
+
+  const parent = groups[msg.parent_jid];
+  if (!parent) return false;
+
+  register(chatJid, {
+    name: msg.sender_name ? `Thread (${msg.sender_name})` : 'Thread',
+    folder: parent.folder,
+    trigger: parent.trigger,
+    added_at: now(),
+    containerConfig: parent.containerConfig,
+    requiresTrigger: parent.requiresTrigger,
+    type: 'thread',
+  });
+  return true;
 }
 
 /**
@@ -300,8 +341,7 @@ async function runAgent(
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
-          sessions[chatJid] = output.newSessionId;
-          setSession(chatJid, output.newSessionId);
+          _persistSessionForChat(sessions, chatJid, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -324,8 +364,7 @@ async function runAgent(
     );
 
     if (output.newSessionId) {
-      sessions[chatJid] = output.newSessionId;
-      setSession(chatJid, output.newSessionId);
+      _persistSessionForChat(sessions, chatJid, output.newSessionId);
     }
 
     if (output.status === 'error') {
@@ -535,13 +574,24 @@ async function main(): Promise<void> {
 
   // チャネルコールバック（すべてのチャネルで共有）
   const channelOpts = {
-    onMessage: (chatJid: string, msg: NewMessage) => {
+    onMessage: (chatJid: string, msg: InboundMessage) => {
       // リモートコントロールコマンド — 保存前にインターセプト
       const trimmed = msg.content.trim();
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
         handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
           logger.error({ err, chatJid }, 'Remote control command error'),
         );
+        return;
+      }
+
+      if (
+        !_autoRegisterThreadFromParent(
+          chatJid,
+          msg,
+          registeredGroups,
+          registerGroup,
+        )
+      ) {
         return;
       }
 
