@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { _autoRegisterThreadFromParent, _persistSessionForChat } from './index.js';
+import {
+  _autoRegisterThreadFromParent,
+  _persistSessionForChat,
+} from './index.js';
 import type { InboundMessage, RegisteredGroup } from './types.js';
 
-function makeInbound(
-  overrides: Partial<InboundMessage> = {},
-): InboundMessage {
+function makeInbound(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
     id: 'm-1',
     chat_jid: 'dc:thread-1',
