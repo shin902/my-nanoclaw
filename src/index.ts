@@ -150,9 +150,14 @@ export function _autoRegisterThreadFromParent(
   const parent = groups[msg.parent_jid];
   if (!parent) return false;
 
+  // folder must be ≤64 chars; suffix is '_' + 8 hex chars = 9 chars
+  const MAX_FOLDER_PREFIX_LENGTH = 55;
+  const threadHash = crypto.createHash('sha1').update(chatJid).digest('hex').slice(0, 8);
+  const threadFolder = `${parent.folder.slice(0, MAX_FOLDER_PREFIX_LENGTH)}_${threadHash}`;
+
   register(chatJid, {
     name: msg.sender_name ? `Thread (${msg.sender_name})` : 'Thread',
-    folder: `${parent.folder.slice(0, 55)}_${crypto.createHash('sha1').update(chatJid).digest('hex').slice(0, 8)}`,
+    folder: threadFolder,
     trigger: parent.trigger,
     added_at: now(),
     containerConfig: parent.containerConfig,

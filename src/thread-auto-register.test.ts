@@ -58,14 +58,20 @@ describe('thread auto-registration', () => {
       }),
     );
 
-    const [, registeredChild] = register.mock.calls[0] as [string, RegisteredGroup];
+    const [, registeredChild] = register.mock.calls[0] as [
+      string,
+      RegisteredGroup,
+    ];
     const expectedFolder = `dc_parent_${crypto.createHash('sha1').update('dc:thread-1').digest('hex').slice(0, 8)}`;
     expect(registeredChild.folder).toBe(expectedFolder);
     expect(registeredChild.folder).toContain(groups['dc:parent-1'].folder);
     expect(registeredChild.folder).not.toBe(groups['dc:parent-1'].folder);
 
     expect(groups['dc:thread-1']).toEqual(
-      expect.objectContaining({ type: 'thread', folder: registeredChild.folder }),
+      expect.objectContaining({
+        type: 'thread',
+        folder: registeredChild.folder,
+      }),
     );
   });
 
