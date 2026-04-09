@@ -219,7 +219,7 @@ describe('container-runner mount behavior', () => {
     vi.clearAllMocks();
   });
 
-  it('uses parent_folder for /workspace/group and /home/node/.claude mounts', async () => {
+  it('uses parent_folder for /workspace/group but isolates /home/node/.claude by group folder', async () => {
     const threadGroup: RegisteredGroup = {
       ...testGroup,
       folder: 'thread-child',
@@ -251,7 +251,7 @@ describe('container-runner mount behavior', () => {
       spec.endsWith(':/home/node/.claude'),
     );
     expect(claudeMount).toBe(
-      `${path.join(DATA_DIR, 'sessions', 'parent-room', '.claude')}:/home/node/.claude`,
+      `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
     );
   });
 });

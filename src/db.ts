@@ -35,6 +35,21 @@ function parseGroupType(
   return 'chat';
 }
 
+function sanitizeParentFolder(
+  parentFolder: string | null | undefined,
+  jid: string,
+): string | undefined {
+  if (!parentFolder) return undefined;
+  if (!isValidGroupFolder(parentFolder)) {
+    logger.warn(
+      { jid, parentFolder },
+      'Ignoring invalid parent_folder; falling back to undefined.',
+    );
+    return undefined;
+  }
+  return parentFolder;
+}
+
 let db: Database.Database;
 
 function createSchema(database: Database.Database): void {
@@ -656,7 +671,7 @@ export function getRegisteredGroup(
     jid: row.jid,
     name: row.name,
     folder: row.folder,
-    parent_folder: row.parent_folder ?? undefined,
+    parent_folder: sanitizeParentFolder(row.parent_folder, row.jid),
     trigger: row.trigger_pattern,
     added_at: row.added_at,
     containerConfig: row.container_config
@@ -672,6 +687,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
+  const parentFolder = sanitizeParentFolder(group.parent_folder, jid);
   const rawType = group.type ?? 'chat';
   // JSON 移行や外部入力経由で不正値が混入する可能性があるため、書き込み前に検証する
   if (!VALID_GROUP_TYPES.has(rawType)) {
@@ -688,7 +704,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     jid,
     group.name,
     group.folder,
-    group.parent_folder ?? null,
+    parentFolder ?? null,
     group.trigger,
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
@@ -724,7 +740,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     result[row.jid] = {
       name: row.name,
       folder: row.folder,
-      parent_folder: row.parent_folder ?? undefined,
+      parent_folder: sanitizeParentFolder(row.parent_folder, row.jid),
       trigger: row.trigger_pattern,
       added_at: row.added_at,
       containerConfig: row.container_config

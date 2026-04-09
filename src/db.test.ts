@@ -531,6 +531,23 @@ describe('registered group type', () => {
     const single = getRegisteredGroup('group@g.us');
     expect(single?.parent_folder).toBeUndefined();
   });
+
+  it('drops invalid parent_folder values instead of persisting unsafe folder names', () => {
+    setRegisteredGroup('thread@g.us', {
+      name: 'Thread Chat',
+      folder: 'discord_thread-chat',
+      parent_folder: '../../outside',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      type: 'thread',
+    });
+
+    const single = getRegisteredGroup('thread@g.us');
+    expect(single?.parent_folder).toBeUndefined();
+
+    const groups = getAllRegisteredGroups();
+    expect(groups['thread@g.us'].parent_folder).toBeUndefined();
+  });
 });
 
 describe('session accessors', () => {

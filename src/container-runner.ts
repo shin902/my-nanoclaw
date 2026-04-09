@@ -64,8 +64,8 @@ function buildVolumeMounts(
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
-  const mountRootFolder = group.parent_folder ?? group.folder;
-  const groupDir = resolveGroupFolderPath(mountRootFolder);
+  const workspaceRootFolder = group.parent_folder ?? group.folder;
+  const groupDir = resolveGroupFolderPath(workspaceRootFolder);
   const isPrivileged = groupType === 'main' || groupType === 'override';
 
   if (isPrivileged) {
@@ -123,7 +123,7 @@ function buildVolumeMounts(
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
-    mountRootFolder,
+    group.folder,
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
