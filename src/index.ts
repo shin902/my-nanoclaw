@@ -152,7 +152,11 @@ export function _autoRegisterThreadFromParent(
 
   // folder must be ≤64 chars; suffix is '_' + 8 hex chars = 9 chars
   const MAX_FOLDER_PREFIX_LENGTH = 55;
-  const threadHash = crypto.createHash('sha1').update(chatJid).digest('hex').slice(0, 8);
+  const threadHash = crypto
+    .createHash('sha1')
+    .update(chatJid)
+    .digest('hex')
+    .slice(0, 8);
   const threadFolder = `${parent.folder.slice(0, MAX_FOLDER_PREFIX_LENGTH)}_${threadHash}`;
 
   register(chatJid, {
