@@ -157,7 +157,9 @@ function createSchema(database: Database.Database): void {
 
   // parent_folder カラムが存在しない場合は追加（既存 DB のマイグレーション）
   try {
-    database.exec(`ALTER TABLE registered_groups ADD COLUMN parent_folder TEXT`);
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN parent_folder TEXT`,
+    );
   } catch {
     /* カラムはすでに存在します */
   }
