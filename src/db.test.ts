@@ -7,6 +7,7 @@ import {
   getAllChats,
   getAllSessions,
   getAllRegisteredGroups,
+  getRegisteredGroup,
   getMessagesSince,
   getNewMessages,
   getSession,
@@ -500,6 +501,35 @@ describe('registered group type', () => {
       const groups = getAllRegisteredGroups();
       expect(groups[jid].type).toBe(t);
     }
+  });
+
+  it('persists parent_folder through set/get helpers', () => {
+    setRegisteredGroup('thread@g.us', {
+      name: 'Thread Chat',
+      folder: 'discord_thread-chat',
+      parent_folder: 'discord_parent-chat',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      type: 'thread',
+    });
+
+    const single = getRegisteredGroup('thread@g.us');
+    expect(single?.parent_folder).toBe('discord_parent-chat');
+
+    const groups = getAllRegisteredGroups();
+    expect(groups['thread@g.us'].parent_folder).toBe('discord_parent-chat');
+  });
+
+  it('returns undefined parent_folder when not set', () => {
+    setRegisteredGroup('group@g.us', {
+      name: 'Family Chat',
+      folder: 'whatsapp_family-chat',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    const single = getRegisteredGroup('group@g.us');
+    expect(single?.parent_folder).toBeUndefined();
   });
 });
 

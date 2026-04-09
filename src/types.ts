@@ -53,6 +53,7 @@ export type GroupType = 'override' | 'main' | 'chat' | 'thread';
 export interface RegisteredGroup {
   name: string;
   folder: string;
+  parent_folder?: string;
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;

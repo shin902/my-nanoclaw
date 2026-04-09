@@ -100,6 +100,7 @@ function createSchema(database: Database.Database): void {
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       folder TEXT NOT NULL UNIQUE,
+      parent_folder TEXT,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
@@ -150,6 +151,13 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE registered_groups SET group_type = 'main' WHERE is_main = 1`,
     );
+  } catch {
+    /* カラムはすでに存在します */
+  }
+
+  // parent_folder カラムが存在しない場合は追加（既存 DB のマイグレーション）
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN parent_folder TEXT`);
   } catch {
     /* カラムはすでに存在します */
   }
@@ -624,6 +632,7 @@ export function getRegisteredGroup(
         jid: string;
         name: string;
         folder: string;
+        parent_folder: string | null;
         trigger_pattern: string;
         added_at: string;
         container_config: string | null;
@@ -645,6 +654,7 @@ export function getRegisteredGroup(
     jid: row.jid,
     name: row.name,
     folder: row.folder,
+    parent_folder: row.parent_folder ?? undefined,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
     containerConfig: row.container_config
@@ -670,12 +680,13 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   }
   const groupType = VALID_GROUP_TYPES.has(rawType) ? rawType : 'chat';
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, group_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, parent_folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, group_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
     group.folder,
+    group.parent_folder ?? null,
     group.trigger,
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
@@ -690,6 +701,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     jid: string;
     name: string;
     folder: string;
+    parent_folder: string | null;
     trigger_pattern: string;
     added_at: string;
     container_config: string | null;
@@ -710,6 +722,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     result[row.jid] = {
       name: row.name,
       folder: row.folder,
+      parent_folder: row.parent_folder ?? undefined,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
       containerConfig: row.container_config
