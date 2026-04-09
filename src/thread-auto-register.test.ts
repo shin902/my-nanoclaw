@@ -55,6 +55,7 @@ describe('thread auto-registration', () => {
         containerConfig: { timeout: 1234 },
         requiresTrigger: false,
         type: 'thread',
+        parent_folder: 'dc_parent',
       }),
     );
 
@@ -71,6 +72,7 @@ describe('thread auto-registration', () => {
       expect.objectContaining({
         type: 'thread',
         folder: registeredChild.folder,
+        parent_folder: 'dc_parent',
       }),
     );
   });

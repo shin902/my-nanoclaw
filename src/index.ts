@@ -162,6 +162,7 @@ export function _autoRegisterThreadFromParent(
   register(chatJid, {
     name: msg.sender_name ? `Thread (${msg.sender_name})` : 'Thread',
     folder: threadFolder,
+    parent_folder: parent.folder,
     trigger: parent.trigger,
     added_at: now(),
     containerConfig: parent.containerConfig,
