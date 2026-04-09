@@ -10,7 +10,7 @@ GitHub Copilot レビュー ([PR #15](https://github.com/shin902/nanoclaw/pull/1
 
 > `groupSessionsDir` is now derived from `group.parent_folder ?? group.folder`, which makes multiple RegisteredGroup entries share the same mounted `/home/node/.claude` directory... potentially leaking privileged tool permissions between groups.
 
-現状の実装では `parent_folder` が設定されている場合（thread グループなど）、親グループと同じ `.claude` ディレクトリを共有している。これにより異なる権限レベルのグループ間で設定が混在し、権限昇格のリスクが生じる。
+現状の実装では `/workspace/group` は `parent_folder` を優先して共有できる一方、`.claude` はグループごとに分離する。これにより異なる権限レベルのグループ間で設定が混在するリスクを避ける。
 
 ## 要件
 
@@ -21,7 +21,7 @@ GitHub Copilot レビュー ([PR #15](https://github.com/shin902/nanoclaw/pull/1
 | `main`         | **独立**（`sessions/{folder}/.claude`）            | なし（初期作成）                                 | 親が存在しないため自前で作成                         |
 | `override`     | **独立**（`sessions/{folder}/.claude`）            | 親から `settings.json` を**コピー**              | 親と同じ権限レベルだが、並行アクセスによる競合を防止 |
 | `chat`         | **独立**（`sessions/{folder}/.claude`）            | `agent_config` に基づき**動的生成**              | 親とは異なる `agent` 設定を持つため分離必須          |
-| `thread`       | **親と共有**（`sessions/{parent_folder}/.claude`） | `inherit: true` または親の `agent_config` を継承 | 親と同じツール権限が必要なため                       |
+| `thread`       | **独立**（`sessions/{folder}/.claude`）            | なし（将来: 親 `agent_config` 継承を検討）       | ワークスペース共有と設定分離を両立するため           |
 
 ### 詳細仕様
 
@@ -72,18 +72,18 @@ data/sessions/{group.folder}/
 #### 4. thread グループ
 
 ```
-data/sessions/{parent.folder}/     # 親と共有
-├── .claude/
-│   └── settings.json              # 親と共有
+data/sessions/{parent.folder}/     # 親ワークスペース参照元
 └── workspace/                     # 親と共有
 
-data/sessions/{group.folder}/      # thread 固有（最小限）
-└── CLAUDE.md                     # thread 固有のシステムプロンプト
+data/sessions/{group.folder}/      # thread 固有
+├── .claude/
+│   └── settings.json              # thread 独立
+└── CLAUDE.md                      # thread 固有のシステムプロンプト
 ```
 
-- **`.claude` は親と共有**（`parent_folder/.claude` をマウント）
-- `thread_defaults.agent.inherit: true` の場合、親と同じ `agent_config` を使用
-- 明示的に `agent` を指定した場合は、親の `.claude` を継承するが、起動時に一時的な上書きを行う（または独立 `.claude` に分離してコピー）
+- **`.claude` は常に group.folder 単位で独立**（`sessions/{group.folder}/.claude`）
+- 現行実装では `thread_defaults.agent.inherit` は未実装（将来対応）
+- 明示的に `agent` を指定した場合は、thread 側の `settings.json` に反映する
 
 ## 実装方針
 
@@ -105,24 +105,8 @@ function buildVolumeMounts(group: RegisteredGroup): VolumeMounts {
 }
 
 function resolveClaudeDir(group: RegisteredGroup): string {
-  switch (group.type) {
-    case 'main':
-      // main は常に独立
-      return `data/sessions/${group.folder}/.claude`;
-
-    case 'override':
-    case 'chat':
-      // override/chat は独立（ただし初回は親からコピー）
-      return `data/sessions/${group.folder}/.claude`;
-
-    case 'thread':
-      // thread は親と共有
-      const parentFolder = group.parent_folder!;
-      return `data/sessions/${parentFolder}/.claude`;
-
-    default:
-      throw new Error(`Unknown group type: ${group.type}`);
-  }
+  // すべてのグループタイプで .claude は独立
+  return `data/sessions/${group.folder}/.claude`;
 }
 ```
 
@@ -178,23 +162,20 @@ function resolveAgentConfig(group: RegisteredGroup): AgentConfig {
 
 ### 権限分離の保証
 
-- `override` と `thread` は同じ親を持つ場合があるが、`.claude` は分離される
-  - `override` → 独立（親からコピー後、分離）
-  - `thread` → 親と共有
+- `override` と `thread` は同じ親を持つ場合があるが、`.claude` は常に分離される
 - これにより `override`（高権限）の設定が `thread`（低権限）に漏れることはない
 
-### thread 同士の共有
+### thread 同士の分離
 
-- 同じ親を持つ複数の `thread` は同じ `.claude` を共有
-- これは意図的な設計（同じ権限レベル、同じツールセット）
-- 並行アクセスによる競合は許容（同一権限レベル内でのみ発生）
+- 同じ親を持つ複数の `thread` でも `.claude` は共有しない
+- 並行アクセス時も `settings.json` 競合を起こさない
 
 ### 設定の永続化
 
 | 操作               | main     | override             | chat             | thread           |
 | ------------------ | -------- | -------------------- | ---------------- | ---------------- |
-| settings.json 生成 | 初回のみ | 初回（親からコピー） | 初回（動的生成） | 親のものを使用   |
-| settings.json 更新 | 可能     | 可能（独立）         | 可能（独立）     | 親に反映（共有） |
+| settings.json 生成 | 初回のみ | 初回（親からコピー） | 初回（動的生成） | 初回（動的生成） |
+| settings.json 更新 | 可能     | 可能（独立）         | 可能（独立）     | 可能（独立）     |
 | CLAUDE.md          | 独立     | 独立                 | 独立             | 独立             |
 
 ## Migration 計画
@@ -209,8 +190,8 @@ function resolveAgentConfig(group: RegisteredGroup): AgentConfig {
    - `parent_folder` が設定されている場合、新規 `.claude` を作成
    - `agent_config` に基づき `settings.json` を生成
 4. **thread グループ**:
-   - `parent_folder/.claude` を参照するように変更
-   - 既存の独立 `.claude` は無視（または削除）
+   - `group.folder/.claude` を利用（常に独立）
+   - `parent_folder` は `/workspace/group` の参照にのみ利用
 
 ## 関連スペック
 

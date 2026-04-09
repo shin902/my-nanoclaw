@@ -35,6 +35,7 @@ function parseGroupType(
   return 'chat';
 }
 
+/** parent_folder をバリデーションし、不正値は undefined に正規化する */
 function sanitizeParentFolder(
   parentFolder: string | null | undefined,
   jid: string,
