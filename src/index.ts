@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -151,7 +152,7 @@ export function _autoRegisterThreadFromParent(
 
   register(chatJid, {
     name: msg.sender_name ? `Thread (${msg.sender_name})` : 'Thread',
-    folder: parent.folder,
+    folder: `${parent.folder.slice(0, 55)}_${crypto.createHash('sha1').update(chatJid).digest('hex').slice(0, 8)}`,
     trigger: parent.trigger,
     added_at: now(),
     containerConfig: parent.containerConfig,

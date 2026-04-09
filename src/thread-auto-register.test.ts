@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { describe, it, expect, vi } from 'vitest';
 
 import {
@@ -44,17 +45,27 @@ describe('thread auto-registration', () => {
     );
 
     expect(ok).toBe(true);
-    expect(register).toHaveBeenCalledWith('dc:thread-1', {
-      name: 'Thread (Bob)',
-      folder: 'dc_parent',
-      trigger: '@Andy',
-      added_at: '2026-01-02T03:04:05.000Z',
-      containerConfig: { timeout: 1234 },
-      requiresTrigger: false,
-      type: 'thread',
-    });
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith(
+      'dc:thread-1',
+      expect.objectContaining({
+        name: 'Thread (Bob)',
+        trigger: '@Andy',
+        added_at: '2026-01-02T03:04:05.000Z',
+        containerConfig: { timeout: 1234 },
+        requiresTrigger: false,
+        type: 'thread',
+      }),
+    );
+
+    const [, registeredChild] = register.mock.calls[0] as [string, RegisteredGroup];
+    const expectedFolder = `dc_parent_${crypto.createHash('sha1').update('dc:thread-1').digest('hex').slice(0, 8)}`;
+    expect(registeredChild.folder).toBe(expectedFolder);
+    expect(registeredChild.folder).toContain(groups['dc:parent-1'].folder);
+    expect(registeredChild.folder).not.toBe(groups['dc:parent-1'].folder);
+
     expect(groups['dc:thread-1']).toEqual(
-      expect.objectContaining({ type: 'thread', folder: 'dc_parent' }),
+      expect.objectContaining({ type: 'thread', folder: registeredChild.folder }),
     );
   });
 
