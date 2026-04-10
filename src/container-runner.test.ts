@@ -219,7 +219,7 @@ describe('container-runner mount behavior', () => {
     vi.clearAllMocks();
   });
 
-  it('uses parent_folder for /workspace/group but isolates /home/node/.claude by group folder', async () => {
+  it('uses parent_folder for /workspace/group while .claude mount uses group.folder', async () => {
     const threadGroup: RegisteredGroup = {
       ...testGroup,
       folder: 'thread-child',
@@ -253,5 +253,56 @@ describe('container-runner mount behavior', () => {
     expect(claudeMount).toBe(
       `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
     );
+  });
+
+  it('gives parent group and thread group separate .claude directories', async () => {
+    const parentGroup: RegisteredGroup = {
+      ...testGroup,
+      folder: 'parent-room',
+    };
+    const threadGroup: RegisteredGroup = {
+      ...testGroup,
+      folder: 'thread-child',
+      parent_folder: 'parent-room',
+    };
+
+    const parentProc = createFakeProcess();
+    fakeProc = parentProc;
+    const parentResult = runContainerAgent(parentGroup, testInput, () => {});
+    emitOutputMarker(parentProc, { status: 'success', result: 'ok' });
+    parentProc.emit('close', 0);
+    await parentResult;
+
+    const threadProc = createFakeProcess();
+    fakeProc = threadProc;
+    const threadResult = runContainerAgent(threadGroup, testInput, () => {});
+    emitOutputMarker(threadProc, { status: 'success', result: 'ok' });
+    threadProc.emit('close', 0);
+    await threadResult;
+
+    const spawnMock = vi.mocked(spawn);
+    const parentArgs = spawnMock.mock.calls[0][1] as string[];
+    const threadArgs = spawnMock.mock.calls[1][1] as string[];
+    const parentVolumeSpecs = parentArgs.filter(
+      (_value, index, all) => all[index - 1] === '-v',
+    );
+    const threadVolumeSpecs = threadArgs.filter(
+      (_value, index, all) => all[index - 1] === '-v',
+    );
+
+    const parentClaudeMount = parentVolumeSpecs.find((spec) =>
+      spec.endsWith(':/home/node/.claude'),
+    );
+    const threadClaudeMount = threadVolumeSpecs.find((spec) =>
+      spec.endsWith(':/home/node/.claude'),
+    );
+
+    expect(parentClaudeMount).toBe(
+      `${path.join(DATA_DIR, 'sessions', 'parent-room', '.claude')}:/home/node/.claude`,
+    );
+    expect(threadClaudeMount).toBe(
+      `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
+    );
+    expect(parentClaudeMount).not.toBe(threadClaudeMount);
   });
 });
