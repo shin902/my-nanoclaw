@@ -118,12 +118,15 @@ function buildVolumeMounts(
     }
   }
 
-  // グループごとの Claude セッションディレクトリ（他のグループから隔離）
-  // グループ間のセッションアクセスを防ぐため、各グループは独自の .claude/ を持ちます
+  // main/override は独自の .claude/ を持つ（将来の AgentConfig 分離に備える）
+  // thread/chat は親と .claude/ を共有し、セッション履歴を引き継ぐ
+  const claudeFolder = isPrivileged
+    ? group.folder
+    : (group.parent_folder ?? group.folder);
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
-    group.folder,
+    claudeFolder,
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });

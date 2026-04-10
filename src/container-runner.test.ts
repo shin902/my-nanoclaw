@@ -219,7 +219,7 @@ describe('container-runner mount behavior', () => {
     vi.clearAllMocks();
   });
 
-  it('uses parent_folder for /workspace/group while .claude mount uses group.folder', async () => {
+  it('thread group shares parent .claude/ but uses parent_folder for /workspace/group', async () => {
     const threadGroup: RegisteredGroup = {
       ...testGroup,
       folder: 'thread-child',
@@ -227,10 +227,7 @@ describe('container-runner mount behavior', () => {
     };
 
     const resultPromise = runContainerAgent(threadGroup, testInput, () => {});
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'ok',
-    });
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
     fakeProc.emit('close', 0);
     await resultPromise;
 
@@ -240,6 +237,7 @@ describe('container-runner mount behavior', () => {
       (_value, index, all) => all[index - 1] === '-v',
     );
 
+    // /workspace/group は parent_folder を使う
     const workspaceGroupMount = volumeSpecs.find((spec) =>
       spec.endsWith(':/workspace/group'),
     );
@@ -247,62 +245,41 @@ describe('container-runner mount behavior', () => {
       `${resolveGroupFolderPath('parent-room')}:/workspace/group`,
     );
 
+    // .claude/ も parent_folder を使う（セッション履歴を親と共有）
     const claudeMount = volumeSpecs.find((spec) =>
       spec.endsWith(':/home/node/.claude'),
     );
     expect(claudeMount).toBe(
-      `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
+      `${path.join(DATA_DIR, 'sessions', 'parent-room', '.claude')}:/home/node/.claude`,
     );
   });
 
-  it('gives parent group and thread group separate .claude directories', async () => {
-    const parentGroup: RegisteredGroup = {
+  it('main group gets its own .claude/ based on group.folder', async () => {
+    const mainGroup: RegisteredGroup = {
       ...testGroup,
-      folder: 'parent-room',
-    };
-    const threadGroup: RegisteredGroup = {
-      ...testGroup,
-      folder: 'thread-child',
-      parent_folder: 'parent-room',
+      folder: 'main-room',
     };
 
-    const parentProc = createFakeProcess();
-    fakeProc = parentProc;
-    const parentResult = runContainerAgent(parentGroup, testInput, () => {});
-    emitOutputMarker(parentProc, { status: 'success', result: 'ok' });
-    parentProc.emit('close', 0);
-    await parentResult;
-
-    const threadProc = createFakeProcess();
-    fakeProc = threadProc;
-    const threadResult = runContainerAgent(threadGroup, testInput, () => {});
-    emitOutputMarker(threadProc, { status: 'success', result: 'ok' });
-    threadProc.emit('close', 0);
-    await threadResult;
+    const resultPromise = runContainerAgent(
+      mainGroup,
+      { ...testInput, groupType: 'main' },
+      () => {},
+    );
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    fakeProc.emit('close', 0);
+    await resultPromise;
 
     const spawnMock = vi.mocked(spawn);
-    const parentArgs = spawnMock.mock.calls[0][1] as string[];
-    const threadArgs = spawnMock.mock.calls[1][1] as string[];
-    const parentVolumeSpecs = parentArgs.filter(
-      (_value, index, all) => all[index - 1] === '-v',
-    );
-    const threadVolumeSpecs = threadArgs.filter(
+    const [, args] = spawnMock.mock.calls[0];
+    const volumeSpecs = (args as string[]).filter(
       (_value, index, all) => all[index - 1] === '-v',
     );
 
-    const parentClaudeMount = parentVolumeSpecs.find((spec) =>
+    const claudeMount = volumeSpecs.find((spec) =>
       spec.endsWith(':/home/node/.claude'),
     );
-    const threadClaudeMount = threadVolumeSpecs.find((spec) =>
-      spec.endsWith(':/home/node/.claude'),
+    expect(claudeMount).toBe(
+      `${path.join(DATA_DIR, 'sessions', 'main-room', '.claude')}:/home/node/.claude`,
     );
-
-    expect(parentClaudeMount).toBe(
-      `${path.join(DATA_DIR, 'sessions', 'parent-room', '.claude')}:/home/node/.claude`,
-    );
-    expect(threadClaudeMount).toBe(
-      `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
-    );
-    expect(parentClaudeMount).not.toBe(threadClaudeMount);
   });
 });
