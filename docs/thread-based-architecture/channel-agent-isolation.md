@@ -17,7 +17,7 @@ NanoClaw のグループモデルは、既にチャンネル＝独立エージ�
 | リソース | グループごとに独立？ | 根拠 |
 |---|---|---|
 | コンテナ | ○ | グループごとに別コンテナを起動 |
-| ファイルシステム | ○ | `groups/{folder}/` が独立マウント |
+| ファイルシステム | △ | `groups/{folder}/` が独立マウント（`thread` は `parent_folder` の親フォルダを共有） |
 | CLAUDE.md | ○ | `groups/{folder}/CLAUDE.md` で個別のシステムプロンプト |
 | agent-runner ソース | ○ | `data/sessions/{folder}/agent-runner-src/` にコピー |
 | settings.json | △ | グループ種別により異なる（後述） |

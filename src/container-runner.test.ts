@@ -226,7 +226,11 @@ describe('container-runner mount behavior', () => {
       parent_folder: 'parent-room',
     };
 
-    const resultPromise = runContainerAgent(threadGroup, testInput, () => {});
+    const resultPromise = runContainerAgent(
+      threadGroup,
+      { ...testInput, groupType: 'thread' },
+      () => {},
+    );
     emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
     fakeProc.emit('close', 0);
     await resultPromise;
