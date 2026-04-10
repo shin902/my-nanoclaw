@@ -219,18 +219,19 @@ describe('container-runner mount behavior', () => {
     vi.clearAllMocks();
   });
 
-  it('uses parent_folder for /workspace/group but isolates /home/node/.claude by group folder', async () => {
+  it('thread group shares parent .claude/ but uses parent_folder for /workspace/group', async () => {
     const threadGroup: RegisteredGroup = {
       ...testGroup,
       folder: 'thread-child',
       parent_folder: 'parent-room',
     };
 
-    const resultPromise = runContainerAgent(threadGroup, testInput, () => {});
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'ok',
-    });
+    const resultPromise = runContainerAgent(
+      threadGroup,
+      { ...testInput, groupType: 'thread' },
+      () => {},
+    );
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
     fakeProc.emit('close', 0);
     await resultPromise;
 
@@ -240,6 +241,7 @@ describe('container-runner mount behavior', () => {
       (_value, index, all) => all[index - 1] === '-v',
     );
 
+    // /workspace/group は parent_folder を使う
     const workspaceGroupMount = volumeSpecs.find((spec) =>
       spec.endsWith(':/workspace/group'),
     );
@@ -247,11 +249,41 @@ describe('container-runner mount behavior', () => {
       `${resolveGroupFolderPath('parent-room')}:/workspace/group`,
     );
 
+    // .claude/ も parent_folder を使う（セッション履歴を親と共有）
     const claudeMount = volumeSpecs.find((spec) =>
       spec.endsWith(':/home/node/.claude'),
     );
     expect(claudeMount).toBe(
-      `${path.join(DATA_DIR, 'sessions', 'thread-child', '.claude')}:/home/node/.claude`,
+      `${path.join(DATA_DIR, 'sessions', 'parent-room', '.claude')}:/home/node/.claude`,
+    );
+  });
+
+  it('main group gets its own .claude/ based on group.folder', async () => {
+    const mainGroup: RegisteredGroup = {
+      ...testGroup,
+      folder: 'main-room',
+    };
+
+    const resultPromise = runContainerAgent(
+      mainGroup,
+      { ...testInput, groupType: 'main' },
+      () => {},
+    );
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    fakeProc.emit('close', 0);
+    await resultPromise;
+
+    const spawnMock = vi.mocked(spawn);
+    const [, args] = spawnMock.mock.calls[0];
+    const volumeSpecs = (args as string[]).filter(
+      (_value, index, all) => all[index - 1] === '-v',
+    );
+
+    const claudeMount = volumeSpecs.find((spec) =>
+      spec.endsWith(':/home/node/.claude'),
+    );
+    expect(claudeMount).toBe(
+      `${path.join(DATA_DIR, 'sessions', 'main-room', '.claude')}:/home/node/.claude`,
     );
   });
 });

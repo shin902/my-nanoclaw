@@ -12,20 +12,31 @@ Discord のチャンネルごとにエージェントを分け、用途に応じ
 
 ## 現状の NanoClaw が既に持っている分離基盤
 
-NanoClaw のグループモデルは、既にチャンネル＝独立エージェントの素地を持つ:
+NanoClaw のグループモデルは、既にチャンネル＝独立エージェントの素地を持つ（以下の表で `{folder}` は `group.folder` の値を指す）:
 
 | リソース | グループごとに独立？ | 根拠 |
 |---|---|---|
 | コンテナ | ○ | グループごとに別コンテナを起動 |
-| ファイルシステム | ○ | `groups/{name}/` が独立マウント |
-| CLAUDE.md | ○ | `groups/{name}/CLAUDE.md` で個別のシステムプロンプト |
-| agent-runner ソース | ○ | `data/sessions/{name}/agent-runner-src/` にコピー |
-| settings.json | ○ | `data/sessions/{name}/.claude/settings.json` |
-| skills/ | ○ | `data/sessions/{name}/.claude/skills/` |
+| ファイルシステム | △ | `groups/{folder}/` が独立マウント（`thread` は `parent_folder` の親フォルダを共有） |
+| CLAUDE.md | ○ | `groups/{folder}/CLAUDE.md` で個別のシステムプロンプト |
+| agent-runner ソース | ○ | `data/sessions/{folder}/agent-runner-src/` にコピー |
+| settings.json | △ | グループ種別により異なる（後述） |
+| skills/ | △ | グループ種別により異なる（後述） |
 | セッション | ○ | グループ単位でセッション ID 管理 |
-| IPC | ○ | `data/ipc/{name}/` で名前空間分離 |
+| IPC | ○ | `data/ipc/{folder}/` で名前空間分離 |
 
 **つまり、各チャンネルを別グループとして登録すれば、ハーネスごとの分離は既に実現されている。**
+
+### `.claude/` ディレクトリのマウント方針
+
+settings.json・skills/・セッション履歴を格納する `.claude/` の hostPath はグループ種別で分岐する。
+
+| グループ種別 | `.claude/` の hostPath | 理由 |
+|---|---|---|
+| `main` / `override` | `data/sessions/{folder}/.claude/` | 将来の AgentConfig（allowedTools / mcpServers）をグループ単位で分離するため |
+| `chat` / `thread` | `data/sessions/{parent_folder ?? folder}/.claude/` | 親チャンネルとセッション履歴を共有し、会話コンテキストを引き継ぐため |
+
+実装箇所: `container-runner.ts` の `buildVolumeMounts()` 内、`isPrivileged` フラグで分岐。
 
 ## 足りないもの: ツール/MCP の宣言的制限
 
