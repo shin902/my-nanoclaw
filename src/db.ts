@@ -422,9 +422,7 @@ function createSchema(database: Database.Database): void {
 
   // channel_mode カラムが存在しない場合は追加（既存 DB のマイグレーション）
   try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN channel_mode TEXT`,
-    );
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN channel_mode TEXT`);
   } catch {
     /* カラムはすでに存在します */
   }
@@ -844,11 +842,13 @@ type RegisteredGroupRow = {
   channel_mode: string | null;
 };
 
-const VALID_CHANNEL_MODES = new Set<string>(['chat', 'url_watch', 'admin_control']);
+const VALID_CHANNEL_MODES = new Set<string>([
+  'chat',
+  'url_watch',
+  'admin_control',
+]);
 
-function parseChannelMode(
-  raw: string | null,
-): RegisteredGroup['channel_mode'] {
+function parseChannelMode(raw: string | null): RegisteredGroup['channel_mode'] {
   if (raw && VALID_CHANNEL_MODES.has(raw))
     return raw as RegisteredGroup['channel_mode'];
   return undefined;
@@ -967,7 +967,13 @@ export function recordSpawnedThread(
   db.prepare(
     `INSERT OR IGNORE INTO spawned_threads (source_message_id, thread_jid, trigger_kind, trigger_value, created_at)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run(sourceMessageId, threadJid, triggerKind, triggerValue, new Date().toISOString());
+  ).run(
+    sourceMessageId,
+    threadJid,
+    triggerKind,
+    triggerValue,
+    new Date().toISOString(),
+  );
 }
 
 // --- JSON マイグレーション ---
