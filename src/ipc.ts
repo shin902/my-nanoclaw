@@ -5,17 +5,127 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  _sanitizeContainerConfig,
+  createTask,
+  deleteTask,
+  getTaskById,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { hasPrivilege, VALID_GROUP_TYPES } from './group-type.js';
 import { logger } from './logger.js';
-import { GroupType, RegisteredGroup } from './types.js';
+import {
+  GroupType,
+  RegisteredGroup,
+  ThreadDefaultGroupType,
+  ThreadDefaults,
+} from './types.js';
 
 function parseIpcGroupType(value: unknown): GroupType | null {
   if (typeof value === 'string' && VALID_GROUP_TYPES.has(value)) {
     return value as GroupType;
   }
   return null;
+}
+
+const VALID_THREAD_DEFAULT_TYPES: ReadonlySet<string> = new Set([
+  'chat',
+  'thread',
+]);
+
+function parseIpcThreadDefaultType(
+  value: unknown,
+): ThreadDefaultGroupType | null {
+  if (typeof value === 'string' && VALID_THREAD_DEFAULT_TYPES.has(value)) {
+    return value as ThreadDefaultGroupType;
+  }
+  return null;
+}
+
+/**
+ * thread_defaults を IPC 入力から検証して返す。
+ * - 省略（null/undefined）の場合は null を返す（正常）
+ * - オブジェクトでない、または type が不正・特権値の場合は false を返す（リクエストを破棄）
+ */
+function validateThreadDefaults(
+  raw: unknown,
+  sourceGroup: string,
+): ThreadDefaults | null | false {
+  if (raw == null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    logger.warn({ sourceGroup }, 'Invalid thread_defaults: not an object');
+    return false;
+  }
+  const td = raw as Record<string, unknown>;
+  const out: ThreadDefaults = {};
+  if (Object.prototype.hasOwnProperty.call(td, 'type')) {
+    const parsedType = parseIpcThreadDefaultType(td.type);
+    if (!parsedType) {
+      logger.warn(
+        { sourceGroup, type: td.type },
+        'Invalid or privileged thread_defaults.type in IPC request',
+      );
+      return false;
+    }
+    out.type = parsedType;
+  }
+  if (Object.prototype.hasOwnProperty.call(td, 'requiresTrigger')) {
+    if (typeof td.requiresTrigger !== 'boolean') {
+      logger.warn(
+        { sourceGroup, requiresTrigger: td.requiresTrigger },
+        'Invalid thread_defaults.requiresTrigger: must be boolean',
+      );
+      return false;
+    }
+    out.requiresTrigger = td.requiresTrigger;
+  }
+  if (Object.prototype.hasOwnProperty.call(td, 'containerConfig')) {
+    const ccRaw = td.containerConfig as Record<string, unknown> | null;
+    if (typeof ccRaw !== 'object' || ccRaw === null || Array.isArray(ccRaw)) {
+      logger.warn(
+        { sourceGroup, containerConfig: td.containerConfig },
+        'Invalid thread_defaults.containerConfig: must be object',
+      );
+      return false;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(ccRaw, 'timeout') &&
+      (typeof ccRaw.timeout !== 'number' ||
+        !Number.isFinite(ccRaw.timeout) ||
+        ccRaw.timeout <= 0)
+    ) {
+      logger.warn(
+        { sourceGroup, timeout: ccRaw.timeout },
+        'Invalid thread_defaults.containerConfig.timeout: must be finite positive number',
+      );
+      return false;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(ccRaw, 'additionalMounts') &&
+      !Array.isArray(ccRaw.additionalMounts)
+    ) {
+      logger.warn(
+        { sourceGroup, additionalMounts: ccRaw.additionalMounts },
+        'Invalid thread_defaults.containerConfig.additionalMounts: must be array',
+      );
+      return false;
+    }
+    const sanitized = _sanitizeContainerConfig(
+      ccRaw,
+      sourceGroup,
+      'thread_defaults.containerConfig',
+    );
+    if (!sanitized) {
+      logger.warn(
+        { sourceGroup },
+        'Invalid thread_defaults.containerConfig in IPC request',
+      );
+      return false;
+    }
+    out.containerConfig = sanitized;
+  }
+  return out;
 }
 
 export interface IpcDeps {
@@ -179,6 +289,8 @@ export async function processTaskIpc(
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
     group_type?: string;
+    thread_defaults?: unknown;
+    channel_mode?: string;
   },
   sourceGroup: string, // IPC ディレクトリから検証された識別情報
   isPrivileged: boolean, // main または override の特権を持つか
@@ -455,17 +567,43 @@ export async function processTaskIpc(
           break;
         }
         const groupType = parsedGroupType ?? 'chat';
+        const validatedThreadDefaults = validateThreadDefaults(
+          data.thread_defaults,
+          sourceGroup,
+        );
+        if (validatedThreadDefaults === false) {
+          break;
+        }
+        const hasContainerConfig = Object.prototype.hasOwnProperty.call(
+          data,
+          'containerConfig',
+        );
+        const sanitizedContainerConfig = hasContainerConfig
+          ? _sanitizeContainerConfig(
+              data.containerConfig,
+              data.jid,
+              'container_config',
+            )
+          : undefined;
+        const VALID_CHANNEL_MODES_IPC = new Set(['chat', 'url_watch', 'admin_control']);
+        const channelMode =
+          data.channel_mode != null &&
+          VALID_CHANNEL_MODES_IPC.has(data.channel_mode)
+            ? (data.channel_mode as 'chat' | 'url_watch' | 'admin_control')
+            : undefined;
         deps.registerGroup(data.jid, {
           name: data.name,
           folder: data.folder,
           trigger: data.trigger,
           added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig,
+          containerConfig: sanitizedContainerConfig ?? data.containerConfig,
           requiresTrigger: data.requiresTrigger,
           type: groupType,
+          thread_defaults: validatedThreadDefaults ?? undefined,
+          channel_mode: channelMode,
         });
         logger.info(
-          { jid: data.jid, folder: data.folder, groupType, sourceGroup },
+          { jid: data.jid, folder: data.folder, groupType, channelMode, sourceGroup },
           'Group registered via IPC',
         );
       } else {

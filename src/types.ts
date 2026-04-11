@@ -50,6 +50,16 @@ export type ActorRole = 'owner' | 'admin' | 'user';
 /** グループの権限タイプ */
 export type GroupType = 'override' | 'main' | 'chat' | 'thread';
 
+/** thread 自動登録で許可する非特権 group タイプ */
+export type ThreadDefaultGroupType = 'chat' | 'thread';
+
+/** thread 自動登録時に子 group へ継承するデフォルト設定 */
+export interface ThreadDefaults {
+  type?: ThreadDefaultGroupType; // デフォルト 'thread'
+  requiresTrigger?: boolean;
+  containerConfig?: ContainerConfig;
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
@@ -59,6 +69,7 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // デフォルト: グループの場合は true、個人チャットの場合は false
   type?: GroupType; // 未指定時は 'chat' として扱う
+  thread_defaults?: ThreadDefaults; // 設定時、thread message を受信した際に子 group を自動登録する
   channel_mode?: 'chat' | 'url_watch' | 'admin_control';
   chat_behavior?: 'ambient_room_chat' | 'directed_help_chat';
 }
@@ -123,6 +134,8 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // オプション: プラットフォームからグループ/チャット名を同期する。
   syncGroups?(force: boolean): Promise<void>;
+  // オプション: 親チャンネルにスレッドを作成し、新スレッドの JID を返す。
+  createThread?(parentJid: string, name: string): Promise<string | null>;
 }
 
 // チャネルが受信メッセージを配信するために使用するコールバック型。

@@ -36,7 +36,9 @@ import {
   getNewMessages,
   getRegisteredGroup,
   getRouterState,
+  hasSpawnedThread,
   initDatabase,
+  recordSpawnedThread,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -195,6 +197,83 @@ export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
 ): void {
   registeredGroups = groups;
+}
+
+/** @internal - テスト用にエクスポート（後方互換エイリアス） */
+export const _autoRegisterThread = _autoRegisterThreadFromParent;
+
+const URL_RE = /https?:\/\/[^\s<>"]+/g;
+
+/**
+ * url_watch チャンネルに URL が投稿されたとき、Discord スレッドを自動作成して
+ * エージェントに要約させる。
+ */
+async function spawnThreadForUrl(
+  chatJid: string,
+  msg: InboundMessage,
+  group: RegisteredGroup,
+  channel: Channel,
+): Promise<void> {
+  const urls = msg.content.match(URL_RE);
+  if (!urls || urls.length === 0) return;
+  const url = urls[0];
+
+  if (hasSpawnedThread(msg.id)) {
+    logger.debug(
+      { chatJid, msgId: msg.id },
+      'URL thread already spawned for this message; skipping',
+    );
+    return;
+  }
+
+  // スレッド名: ドメイン + パスから生成（最大80文字）
+  let threadName: string;
+  try {
+    const parsed = new URL(url);
+    threadName = `${parsed.hostname}${parsed.pathname}`.slice(0, 80);
+  } catch {
+    threadName = url.slice(0, 80);
+  }
+
+  const threadJid = await channel.createThread!(chatJid, threadName);
+  if (!threadJid) {
+    logger.warn({ chatJid, url }, 'Failed to create Discord thread for URL');
+    return;
+  }
+
+  recordSpawnedThread(msg.id, threadJid, 'url', url);
+
+  // スレッドをグループとして登録（requiresTrigger: false で自動応答）
+  const childGroup: RegisteredGroup = {
+    name: threadName,
+    folder: group.folder,
+    trigger: group.trigger,
+    added_at: new Date().toISOString(),
+    containerConfig: group.containerConfig,
+    requiresTrigger: false,
+    type: 'thread',
+  };
+  registerGroup(threadJid, childGroup);
+
+  // 初期メッセージとして URL を合成保存してエージェントを起動
+  const syntheticMsg: InboundMessage = {
+    id: `${msg.id}_url`,
+    chat_jid: threadJid,
+    sender: msg.sender,
+    sender_name: msg.sender_name,
+    content: url,
+    timestamp: msg.timestamp,
+    is_from_me: false,
+    is_thread: true,
+    parent_jid: chatJid,
+  };
+  storeMessage(syntheticMsg);
+  queue.enqueueMessageCheck(threadJid);
+
+  logger.info(
+    { chatJid, threadJid, url },
+    'URL thread spawned and agent queued',
+  );
 }
 
 /**
@@ -622,6 +701,18 @@ async function main(): Promise<void> {
           return;
         }
       }
+      // url_watch モード: URL が含まれていればスレッドを自動作成してエージェントに渡す
+      const group = registeredGroups[chatJid];
+      if (group?.channel_mode === 'url_watch' && !msg.is_thread) {
+        const ch = findChannel(channels, chatJid);
+        if (ch?.createThread) {
+          spawnThreadForUrl(chatJid, msg, group, ch).catch((err) =>
+            logger.error({ err, chatJid }, 'URL thread spawn failed'),
+          );
+          return; // url_watch チャンネルでは通常のエージェント処理を行わない
+        }
+      }
+
       storeMessage(msg);
     },
     onChatMetadata: (

@@ -7,11 +7,13 @@ import { VALID_GROUP_TYPES } from './group-type.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  ContainerConfig,
   GroupType,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
+  ThreadDefaults,
 } from './types.js';
 
 /** DB の group_type / is_main から GroupType を解決する */
@@ -49,6 +51,162 @@ function sanitizeParentFolder(
     return undefined;
   }
   return parentFolder;
+}
+
+const JID_PREFIX_RE = /^[a-z]{2,}:/;
+const WHATSAPP_JID_RE = /^[^@\s]+@(g\.us|s\.whatsapp\.net)$/;
+
+export function _shouldMigrateSessionKey(key: string): boolean {
+  if (JID_PREFIX_RE.test(key)) return true;
+  if (WHATSAPP_JID_RE.test(key)) return true;
+  return false;
+}
+
+export function _sanitizeContainerConfig(
+  raw: unknown,
+  jid: string,
+  field:
+    | 'container_config'
+    | 'thread_defaults.containerConfig' = 'container_config',
+): ContainerConfig | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    logger.warn({ jid, field }, 'Invalid containerConfig; ignoring');
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const out: ContainerConfig = {};
+  if (Object.prototype.hasOwnProperty.call(src, 'timeout')) {
+    if (
+      typeof src.timeout === 'number' &&
+      Number.isFinite(src.timeout) &&
+      src.timeout > 0
+    ) {
+      out.timeout = src.timeout;
+    } else {
+      logger.warn(
+        { jid, field, timeout: src.timeout },
+        'Invalid containerConfig.timeout; ignoring',
+      );
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(src, 'additionalMounts')) {
+    if (Array.isArray(src.additionalMounts)) {
+      const mounts = src.additionalMounts
+        .filter(
+          (
+            m,
+          ): m is {
+            hostPath: string;
+            containerPath?: string;
+            readonly?: boolean;
+          } =>
+            !!m &&
+            typeof m === 'object' &&
+            typeof (m as { hostPath?: unknown }).hostPath === 'string' &&
+            ((m as { containerPath?: unknown }).containerPath === undefined ||
+              typeof (m as { containerPath?: unknown }).containerPath ===
+                'string') &&
+            ((m as { readonly?: unknown }).readonly === undefined ||
+              typeof (m as { readonly?: unknown }).readonly === 'boolean'),
+        )
+        .map((m) => ({
+          hostPath: m.hostPath,
+          ...(m.containerPath !== undefined
+            ? { containerPath: m.containerPath }
+            : {}),
+          ...(m.readonly !== undefined ? { readonly: m.readonly } : {}),
+        }));
+      if (mounts.length > 0) {
+        out.additionalMounts = mounts;
+      } else if (src.additionalMounts.length > 0) {
+        logger.warn(
+          { jid, field },
+          'Invalid containerConfig.additionalMounts; ignoring',
+        );
+      }
+    } else {
+      logger.warn(
+        { jid, field },
+        'Invalid containerConfig.additionalMounts; ignoring',
+      );
+    }
+  }
+  return out;
+}
+
+export function _parseContainerConfigJson(
+  containerConfig: string | null,
+  jid: string,
+): ContainerConfig | undefined {
+  if (!containerConfig) return undefined;
+  try {
+    return _sanitizeContainerConfig(JSON.parse(containerConfig), jid);
+  } catch (err) {
+    logger.warn(
+      { jid, err },
+      'Invalid container_config JSON in DB; ignoring this value',
+    );
+    return undefined;
+  }
+}
+
+export function _sanitizeThreadDefaults(
+  raw: unknown,
+  jid: string,
+): ThreadDefaults | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    logger.warn({ jid }, 'Invalid thread_defaults in DB; ignoring');
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const out: ThreadDefaults = {};
+  if (Object.prototype.hasOwnProperty.call(src, 'type')) {
+    if (src.type === 'chat' || src.type === 'thread') {
+      out.type = src.type;
+    } else {
+      logger.warn(
+        { jid, type: src.type },
+        'Invalid or privileged thread_defaults.type in DB; ignoring',
+      );
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(src, 'requiresTrigger')) {
+    if (typeof src.requiresTrigger === 'boolean') {
+      out.requiresTrigger = src.requiresTrigger;
+    } else {
+      logger.warn(
+        { jid, requiresTrigger: src.requiresTrigger },
+        'Invalid thread_defaults.requiresTrigger in DB; ignoring',
+      );
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(src, 'containerConfig')) {
+    const cc = _sanitizeContainerConfig(
+      src.containerConfig,
+      jid,
+      'thread_defaults.containerConfig',
+    );
+    if (cc) out.containerConfig = cc;
+  }
+  return out;
+}
+
+export function _parseThreadDefaultsJson(
+  threadDefaults: string | null,
+  jid: string,
+): ThreadDefaults | undefined {
+  if (!threadDefaults) return undefined;
+  try {
+    return _sanitizeThreadDefaults(JSON.parse(threadDefaults), jid);
+  } catch (err) {
+    logger.warn(
+      { jid, err },
+      'Invalid thread_defaults JSON in DB; ignoring this value',
+    );
+    return undefined;
+  }
 }
 
 let db: Database.Database;
@@ -112,10 +270,17 @@ function createSchema(database: Database.Database): void {
       chat_jid TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS spawned_threads (
+      source_message_id TEXT PRIMARY KEY,
+      thread_jid        TEXT NOT NULL,
+      trigger_kind      TEXT NOT NULL,
+      trigger_value     TEXT NOT NULL,
+      created_at        TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       parent_folder TEXT,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
@@ -180,6 +345,70 @@ function createSchema(database: Database.Database): void {
     /* カラムはすでに存在します */
   }
 
+  // thread_defaults カラムが存在しない場合は追加
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN thread_defaults TEXT`,
+    );
+  } catch {
+    /* カラムはすでに存在します */
+  }
+
+  // 旧スキーマ: registered_groups.folder UNIQUE を解除する
+  // thread は parent と同じ folder を共有するため、folder の一意制約は不適切。
+  try {
+    const indexes = database
+      .prepare(`PRAGMA index_list('registered_groups')`)
+      .all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    const hasUniqueFolderIndex = indexes.some((idx) => {
+      if (idx.unique !== 1) return false;
+      const safeIndexName = idx.name.replace(/'/g, "''");
+      const cols = database
+        .prepare(`PRAGMA index_info('${safeIndexName}')`)
+        .all() as Array<{ name: string }>;
+      return cols.length === 1 && cols[0].name === 'folder';
+    });
+    if (hasUniqueFolderIndex) {
+      const migrate = database.transaction(() => {
+        database.exec(`
+          ALTER TABLE registered_groups RENAME TO registered_groups_old;
+          CREATE TABLE registered_groups (
+            jid TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            folder TEXT NOT NULL,
+            parent_folder TEXT,
+            trigger_pattern TEXT NOT NULL,
+            added_at TEXT NOT NULL,
+            container_config TEXT,
+            requires_trigger INTEGER DEFAULT 1,
+            is_main INTEGER DEFAULT 0,
+            group_type TEXT DEFAULT 'chat',
+            thread_defaults TEXT,
+            channel_mode TEXT
+          );
+          INSERT INTO registered_groups (
+            jid, name, folder, parent_folder, trigger_pattern, added_at, container_config,
+            requires_trigger, is_main, group_type, thread_defaults, channel_mode
+          )
+          SELECT
+            jid, name, folder, parent_folder, trigger_pattern, added_at, container_config,
+            requires_trigger, is_main, group_type, thread_defaults, channel_mode
+          FROM registered_groups_old;
+          DROP TABLE registered_groups_old;
+        `);
+      });
+      migrate();
+    }
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to migrate registered_groups folder uniqueness',
+    );
+  }
+
   // channel および is_group カラムが存在しない場合は追加（既存 DB のマイグレーション）
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -239,6 +468,15 @@ function createSchema(database: Database.Database): void {
     }
   } catch {
     /* 変換不能なレガシー行はそのまま保持します */
+  }
+
+  // channel_mode カラムが存在しない場合は追加（既存 DB のマイグレーション）
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN channel_mode TEXT`,
+    );
+  } catch {
+    /* カラムはすでに存在します */
   }
 }
 
@@ -640,25 +878,54 @@ export function getAllSessions(): Record<string, string> {
 
 // --- 登録済みグループ・アクセッサー ---
 
+type RegisteredGroupRow = {
+  jid: string;
+  name: string;
+  folder: string;
+  parent_folder: string | null;
+  trigger_pattern: string;
+  added_at: string;
+  container_config: string | null;
+  requires_trigger: number | null;
+  is_main: number | null;
+  group_type: string | null;
+  thread_defaults: string | null;
+  channel_mode: string | null;
+};
+
+const VALID_CHANNEL_MODES = new Set<string>(['chat', 'url_watch', 'admin_control']);
+
+function parseChannelMode(
+  raw: string | null,
+): RegisteredGroup['channel_mode'] {
+  if (raw && VALID_CHANNEL_MODES.has(raw))
+    return raw as RegisteredGroup['channel_mode'];
+  return undefined;
+}
+
+function rowToRegisteredGroup(row: RegisteredGroupRow): RegisteredGroup {
+  const groupType = parseGroupType(row.group_type, row.is_main, row.jid);
+  return {
+    name: row.name,
+    folder: row.folder,
+    parent_folder: sanitizeParentFolder(row.parent_folder, row.jid),
+    trigger: row.trigger_pattern,
+    added_at: row.added_at,
+    containerConfig: _parseContainerConfigJson(row.container_config, row.jid),
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    type: groupType,
+    thread_defaults: _parseThreadDefaultsJson(row.thread_defaults, row.jid),
+    channel_mode: parseChannelMode(row.channel_mode),
+  };
+}
+
 export function getRegisteredGroup(
   jid: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
   const row = db
     .prepare('SELECT * FROM registered_groups WHERE jid = ?')
-    .get(jid) as
-    | {
-        jid: string;
-        name: string;
-        folder: string;
-        parent_folder: string | null;
-        trigger_pattern: string;
-        added_at: string;
-        container_config: string | null;
-        requires_trigger: number | null;
-        is_main: number | null;
-        group_type: string | null;
-      }
-    | undefined;
+    .get(jid) as RegisteredGroupRow | undefined;
   if (!row) return undefined;
   if (!isValidGroupFolder(row.folder)) {
     logger.warn(
@@ -667,21 +934,7 @@ export function getRegisteredGroup(
     );
     return undefined;
   }
-  const groupType = parseGroupType(row.group_type, row.is_main, row.jid);
-  return {
-    jid: row.jid,
-    name: row.name,
-    folder: row.folder,
-    parent_folder: sanitizeParentFolder(row.parent_folder, row.jid),
-    trigger: row.trigger_pattern,
-    added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
-    requiresTrigger:
-      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    type: groupType,
-  };
+  return { jid: row.jid, ...rowToRegisteredGroup(row) };
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
@@ -698,9 +951,25 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     );
   }
   const groupType = VALID_GROUP_TYPES.has(rawType) ? rawType : 'chat';
+  const channelMode =
+    group.channel_mode && VALID_CHANNEL_MODES.has(group.channel_mode)
+      ? group.channel_mode
+      : null;
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, parent_folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, group_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO registered_groups (jid, name, folder, parent_folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, group_type, thread_defaults, channel_mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(jid) DO UPDATE SET
+       name = excluded.name,
+       folder = excluded.folder,
+       parent_folder = excluded.parent_folder,
+       trigger_pattern = excluded.trigger_pattern,
+       added_at = excluded.added_at,
+       container_config = excluded.container_config,
+       requires_trigger = excluded.requires_trigger,
+       is_main = excluded.is_main,
+       group_type = excluded.group_type,
+       thread_defaults = excluded.thread_defaults,
+       channel_mode = excluded.channel_mode`,
   ).run(
     jid,
     group.name,
@@ -712,22 +981,15 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     groupType === 'main' || groupType === 'override' ? 1 : 0,
     groupType,
+    group.thread_defaults ? JSON.stringify(group.thread_defaults) : null,
+    channelMode,
   );
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
-  const rows = db.prepare('SELECT * FROM registered_groups').all() as Array<{
-    jid: string;
-    name: string;
-    folder: string;
-    parent_folder: string | null;
-    trigger_pattern: string;
-    added_at: string;
-    container_config: string | null;
-    requires_trigger: number | null;
-    is_main: number | null;
-    group_type: string | null;
-  }>;
+  const rows = db
+    .prepare('SELECT * FROM registered_groups')
+    .all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
     if (!isValidGroupFolder(row.folder)) {
@@ -737,22 +999,28 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       );
       continue;
     }
-    const groupType = parseGroupType(row.group_type, row.is_main, row.jid);
-    result[row.jid] = {
-      name: row.name,
-      folder: row.folder,
-      parent_folder: sanitizeParentFolder(row.parent_folder, row.jid),
-      trigger: row.trigger_pattern,
-      added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
-      requiresTrigger:
-        row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      type: groupType,
-    };
+    result[row.jid] = rowToRegisteredGroup(row);
   }
   return result;
+}
+
+export function hasSpawnedThread(sourceMessageId: string): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM spawned_threads WHERE source_message_id = ?')
+    .get(sourceMessageId);
+  return row !== undefined;
+}
+
+export function recordSpawnedThread(
+  sourceMessageId: string,
+  threadJid: string,
+  triggerKind: string,
+  triggerValue: string,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO spawned_threads (source_message_id, thread_jid, trigger_kind, trigger_value, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(sourceMessageId, threadJid, triggerKind, triggerValue, new Date().toISOString());
 }
 
 // --- JSON マイグレーション ---
