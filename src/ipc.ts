@@ -318,6 +318,7 @@ export async function processTaskIpc(
     containerConfig?: RegisteredGroup['containerConfig'];
     group_type?: string;
     thread_defaults?: unknown;
+    channel_mode?: string;
   },
   sourceChatJid: string, // IPC ディレクトリから検証された識別情報（chat JID）
   isPrivileged: boolean, // main または override の特権を持つか
@@ -612,6 +613,12 @@ export async function processTaskIpc(
               'container_config',
             )
           : undefined;
+        const VALID_CHANNEL_MODES_IPC = new Set(['chat', 'url_watch', 'admin_control']);
+        const channelMode =
+          data.channel_mode != null &&
+          VALID_CHANNEL_MODES_IPC.has(data.channel_mode)
+            ? (data.channel_mode as 'chat' | 'url_watch' | 'admin_control')
+            : undefined;
         deps.registerGroup(data.jid, {
           name: data.name,
           folder: data.folder,
@@ -621,12 +628,14 @@ export async function processTaskIpc(
           requiresTrigger: data.requiresTrigger,
           type: groupType,
           thread_defaults: validatedThreadDefaults ?? undefined,
+          channel_mode: channelMode,
         });
         logger.info(
           {
             jid: data.jid,
             folder: data.folder,
             groupType,
+            channelMode,
             sourceChatJid,
           },
           'Group registered via IPC',
