@@ -242,7 +242,9 @@ describe('thread_per_message flow', () => {
       (firstCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
     expect(firstPrompt).toContain('<thread_per_message_url_autosave>');
     expect(firstPrompt).toContain('https://example.com/post');
-    expect(firstPrompt).toContain('/workspace/group/url-watch/msg-1_thread');
+    expect(firstPrompt).toContain(
+      '/workspace/group/url-watch/msg-1_thread-example.com-post.md',
+    );
   });
 
   it('URL なしでも createThread を実行してスレッドへ保存する', async () => {

@@ -326,6 +326,7 @@ async function spawnThreadForMessage(
 }
 
 const URL_RE = /https?:\/\/[^\s<>"']+/i;
+const MAX_SAFE_FILE_SEGMENT_LENGTH = 80;
 
 function extractFirstUrl(value: string): string | null {
   const firstMatch = value.match(URL_RE);
@@ -338,7 +339,7 @@ function toSafeFileSegment(value: string): string {
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
-  return normalized.slice(0, 80) || 'page';
+  return normalized.slice(0, MAX_SAFE_FILE_SEGMENT_LENGTH) || 'page';
 }
 
 function buildThreadPerMessageUrlAutosaveInstruction(
@@ -354,13 +355,14 @@ function buildThreadPerMessageUrlAutosaveInstruction(
   if (!messageWithUrl) return null;
   if (!url) return null;
 
-  let urlSlug = 'page';
-  try {
-    const parsed = new URL(url);
-    urlSlug = toSafeFileSegment(`${parsed.hostname}${parsed.pathname}`);
-  } catch {
-    urlSlug = toSafeFileSegment(url);
-  }
+  const urlSlug = (() => {
+    try {
+      const parsed = new URL(url);
+      return toSafeFileSegment(`${parsed.hostname}${parsed.pathname}`);
+    } catch {
+      return toSafeFileSegment(url);
+    }
+  })();
   const messageSlug = toSafeFileSegment(messageWithUrl.id);
   const markdownPath = `/workspace/group/url-watch/${messageSlug}-${urlSlug}.md`;
   return [
