@@ -358,7 +358,7 @@ function buildThreadPerMessageUrlAutosaveInstruction(
   const urlSlug = (() => {
     try {
       const parsed = new URL(url);
-      return toSafeFileSegment(`${parsed.hostname}${parsed.pathname}`);
+      return toSafeFileSegment(`${parsed.hostname}-${parsed.pathname}`);
     } catch {
       return toSafeFileSegment(url);
     }
