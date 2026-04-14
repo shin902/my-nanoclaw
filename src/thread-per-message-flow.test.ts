@@ -243,7 +243,7 @@ describe('thread_per_message flow', () => {
     expect(firstPrompt).toContain('<thread_per_message_url_autosave>');
     expect(firstPrompt).toContain('https://example.com/post');
     expect(firstPrompt).toContain(
-      '/workspace/group/url-watch/msg-1_thread-example.com-post.md',
+      '/workspace/group/url-watch/msg-1_thread-example-com-post.md',
     );
   });
 
@@ -287,7 +287,7 @@ describe('thread_per_message flow', () => {
     const firstPrompt =
       (firstCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
     expect(firstPrompt).toContain(
-      '/workspace/group/url-watch/msg-special_thread-example.com-a-b.md',
+      '/workspace/group/url-watch/msg-special_thread-example-com-a-b.md',
     );
   });
 

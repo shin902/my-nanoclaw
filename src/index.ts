@@ -336,7 +336,7 @@ function extractFirstUrl(value: string): string | null {
 function toSafeFileSegment(value: string): string {
   const normalized = value
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
   return normalized.slice(0, MAX_SAFE_FILE_SEGMENT_LENGTH) || 'page';
