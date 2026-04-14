@@ -240,7 +240,9 @@ describe('thread_per_message flow', () => {
       | undefined;
     const firstPrompt =
       (firstCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
+    expect(firstPrompt).toContain('<thread_per_message_url_autosave>');
     expect(firstPrompt).toContain('https://example.com/post');
+    expect(firstPrompt).toContain('/workspace/group/url-watch/msg-1_thread');
   });
 
   it('URL なしでも createThread を実行してスレッドへ保存する', async () => {
@@ -421,6 +423,28 @@ describe('thread_per_message flow', () => {
       (followupCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
     expect(followupPrompt).toContain('next question without url');
     expect(followupPrompt).not.toContain('https://example.com/root');
+    expect(followupPrompt).not.toContain('<thread_per_message_url_autosave>');
+  });
+
+  it('thread_per_message 以外では URL 自動保存指示を挿入しない', async () => {
+    const nonThreadGroup: RegisteredGroup = {
+      ...baseGroup,
+      channel_mode: 'chat',
+      requiresTrigger: false,
+    };
+    _setRegisteredGroups({ [chatJid]: nonThreadGroup });
+    const msg = makeMsg({ id: 'msg-non-thread-mode' });
+
+    storeMessageMock(msg);
+    await _processMessagesForGroup(chatJid, nonThreadGroup, makeChannel());
+
+    expect(runContainerAgentMock).toHaveBeenCalledTimes(1);
+    const firstCall = runContainerAgentMock.mock.calls.at(0) as
+      | unknown[]
+      | undefined;
+    const firstPrompt =
+      (firstCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
+    expect(firstPrompt).not.toContain('<thread_per_message_url_autosave>');
   });
 
   it('thread_per_message 以外の親配下 thread はこのハンドラで処理しない', () => {

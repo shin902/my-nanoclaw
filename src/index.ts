@@ -332,6 +332,43 @@ function extractFirstUrl(value: string): string | null {
   return firstMatch?.[0] ?? null;
 }
 
+function toSafeFileSegment(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized.slice(0, 80) || 'page';
+}
+
+function buildThreadPerMessageUrlAutosaveInstruction(
+  group: RegisteredGroup,
+  missedMessages: InboundMessage[],
+): string | null {
+  if (group.channel_mode !== 'thread_per_message') return null;
+  const messageWithUrl = missedMessages.find((m) => extractFirstUrl(m.content));
+  if (!messageWithUrl) return null;
+  const url = extractFirstUrl(messageWithUrl.content);
+  if (!url) return null;
+
+  let urlSlug = 'page';
+  try {
+    const parsed = new URL(url);
+    urlSlug = toSafeFileSegment(`${parsed.hostname}${parsed.pathname}`);
+  } catch {
+    urlSlug = toSafeFileSegment(url);
+  }
+  const messageSlug = toSafeFileSegment(messageWithUrl.id);
+  const markdownPath = `/workspace/group/url-watch/${messageSlug}-${urlSlug}.md`;
+  return [
+    '<thread_per_message_url_autosave>',
+    `Detected URL: ${url}`,
+    `Before your normal reply, fetch this URL and save the fetched content as Markdown to: ${markdownPath}`,
+    'Use UTF-8 markdown text.',
+    '</thread_per_message_url_autosave>',
+  ].join('\n');
+}
+
 function buildThreadNameForMessage(msg: InboundMessage): string {
   const firstUrl = extractFirstUrl(msg.content);
   if (firstUrl) {
@@ -473,7 +510,14 @@ async function processMessagesForGroup(
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const promptBody = formatMessages(missedMessages, TIMEZONE);
+  const urlAutosaveInstruction = buildThreadPerMessageUrlAutosaveInstruction(
+    group,
+    missedMessages,
+  );
+  const prompt = urlAutosaveInstruction
+    ? `${urlAutosaveInstruction}\n\n${promptBody}`
+    : promptBody;
 
   // startMessageLoop 内のパイプパスがこれらのメッセージを再取得しないように
   // カーソルを進めます。エラー時にロールバックできるよう古いカーソルを保存します。
