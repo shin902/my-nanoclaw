@@ -265,6 +265,30 @@ describe('thread_per_message flow', () => {
     );
   });
 
+  it('URL 自動保存パスは安全なファイル名に正規化される', async () => {
+    const createThread = vi.fn(async () => 'dc:thread-sanitize');
+    const msg = makeMsg({
+      id: 'msg:!?special',
+      content: 'https://example.com/a+b',
+    });
+
+    const handled = _maybeHandleThreadPerMessageMessage(chatJid, msg, [
+      makeChannel(createThread),
+    ]);
+    expect(handled).toBe(true);
+    await flushAsyncWork();
+
+    expect(runContainerAgentMock).toHaveBeenCalledTimes(1);
+    const firstCall = runContainerAgentMock.mock.calls.at(0) as
+      | unknown[]
+      | undefined;
+    const firstPrompt =
+      (firstCall?.[1] as { prompt?: string } | undefined)?.prompt ?? '';
+    expect(firstPrompt).toContain(
+      '/workspace/group/url-watch/msg-special_thread-example.com-a-b.md',
+    );
+  });
+
   it('初期化失敗時は予約解放し元メッセージ保存へフォールバックする', async () => {
     const createThread = vi.fn(async () => 'dc:thread-init-fail');
     const msg = makeMsg({ id: 'msg-init-fail' });

@@ -346,9 +346,12 @@ function buildThreadPerMessageUrlAutosaveInstruction(
   missedMessages: InboundMessage[],
 ): string | null {
   if (group.channel_mode !== 'thread_per_message') return null;
-  const messageWithUrl = missedMessages.find((m) => extractFirstUrl(m.content));
+  let url: string | null = null;
+  const messageWithUrl = missedMessages.find((m) => {
+    url = extractFirstUrl(m.content);
+    return Boolean(url);
+  });
   if (!messageWithUrl) return null;
-  const url = extractFirstUrl(messageWithUrl.content);
   if (!url) return null;
 
   let urlSlug = 'page';
