@@ -465,7 +465,7 @@ server.tool(
     trigger: z.string().describe('トリガーワード（例: "@Andy"）'),
     group_type: z
       .enum(['main', 'chat', 'thread'])
-      .optional()
+      .default('chat')
       .describe(
         'グループの権限タイプ（デフォルト: "chat"）。"main"=特権、"chat"=通常会話、"thread"=タスク実行',
       ),
@@ -489,11 +489,9 @@ server.tool(
       name: args.name,
       folder: args.folder,
       trigger: args.trigger,
+      group_type: args.group_type,
       timestamp: new Date().toISOString(),
     };
-    if (args.group_type !== undefined) {
-      data.group_type = args.group_type;
-    }
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -501,7 +499,7 @@ server.tool(
       content: [
         {
           type: 'text' as const,
-          text: `グループ "${args.name}" を登録しました（type: ${args.group_type ?? 'chat'}）。即座にメッセージの受信が開始されます。`,
+          text: `グループ "${args.name}" を登録しました（type: ${args.group_type}）。即座にメッセージの受信が開始されます。`,
         },
       ],
     };
