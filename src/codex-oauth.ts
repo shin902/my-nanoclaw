@@ -323,7 +323,9 @@ async function refreshCachedState(
   }
 
   const refreshPromise = (async () => {
-    const refreshed = await refreshCodexOAuthCredentials(cached.credentials.refresh);
+    const refreshed = await refreshCodexOAuthCredentials(
+      cached.credentials.refresh,
+    );
     cached.credentials = refreshed;
 
     if (cached.authPath && !cached.oauthJson) {

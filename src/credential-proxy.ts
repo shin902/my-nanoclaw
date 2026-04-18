@@ -131,12 +131,14 @@ export function startCredentialProxy(
             resolvedApiKey = providerConfig.apiKey;
           }
 
-          const headers: Record<string, string | number | string[] | undefined> =
-            {
-              ...(req.headers as Record<string, string>),
-              host: upstreamUrl.host,
-              'content-length': body.length,
-            };
+          const headers: Record<
+            string,
+            string | number | string[] | undefined
+          > = {
+            ...(req.headers as Record<string, string>),
+            host: upstreamUrl.host,
+            'content-length': body.length,
+          };
 
           // プロキシによって転送してはならないホップバイホップ・ヘッダーを削除
           delete headers['connection'];

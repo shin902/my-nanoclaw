@@ -34,7 +34,10 @@ export function makeCodexCliAuthJson(
   return JSON.stringify({
     auth_mode: 'oauth',
     tokens: {
-      access_token: makeCodexAccessToken(options.expiresAtMs, options.accountId),
+      access_token: makeCodexAccessToken(
+        options.expiresAtMs,
+        options.accountId,
+      ),
       refresh_token: refreshToken,
       ...(options.accountId ? { account_id: options.accountId } : {}),
     },

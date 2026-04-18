@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  afterAll,
+  vi,
+} from 'vitest';
 import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
@@ -272,9 +280,7 @@ describe('credential-proxy', () => {
       '{}',
     );
 
-    expect(lastUpstreamHeaders['authorization']).toBe(
-      `Bearer ${accessToken}`,
-    );
+    expect(lastUpstreamHeaders['authorization']).toBe(`Bearer ${accessToken}`);
   });
 
   it('codex mode refreshes expired token once and reuses refreshed credentials', async () => {
@@ -298,8 +304,7 @@ describe('credential-proxy', () => {
     vi.stubGlobal('fetch', fetchMock as typeof fetch);
     const readSpy = vi.spyOn(fs, 'readFileSync');
 
-    const codexAuthPath =
-      `/tmp/nanoclaw-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    const codexAuthPath = `/tmp/nanoclaw-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
     fs.writeFileSync(
       codexAuthPath,
       makeCodexCliAuthJson({
@@ -374,8 +379,7 @@ describe('credential-proxy', () => {
     });
     vi.stubGlobal('fetch', fetchMock as typeof fetch);
 
-    const codexAuthPath =
-      `/tmp/nanoclaw-codex-auth-concurrent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    const codexAuthPath = `/tmp/nanoclaw-codex-auth-concurrent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
     fs.writeFileSync(
       codexAuthPath,
       makeCodexCliAuthJson({
