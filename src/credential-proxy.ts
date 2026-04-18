@@ -211,11 +211,7 @@ export function startCredentialProxy(
           );
           if (!res.headersSent) {
             res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-            res.end(
-              err instanceof Error
-                ? err.message
-                : 'Credential proxy misconfiguration',
-            );
+            res.end('Credential proxy credential resolution failed.');
           } else if (!res.destroyed) {
             res.destroy();
           }

@@ -3,6 +3,7 @@ import path from 'path';
 
 import { readEnvFile } from './env.js';
 import {
+  CodexAuthFileNotFoundError,
   validateCodexAuthFile,
   validateCodexOAuthJson,
 } from './codex-oauth.js';
@@ -141,10 +142,9 @@ export function detectActiveProviderConfig(): ActiveProviderConfig {
         try {
           validateCodexAuthFile(codexAuthPath);
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
           if (
             !hasExplicitCodexAuthPath &&
-            message.includes('Codex auth file was not found')
+            err instanceof CodexAuthFileNotFoundError
           ) {
             continue;
           }

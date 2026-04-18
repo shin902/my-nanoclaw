@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockEnv: Record<string, string> = {};
 
@@ -26,7 +26,7 @@ describe('provider-config', () => {
     process.env.CODEX_HOME = '/tmp/nanoclaw-provider-config-tests';
   });
 
-  afterAll(() => {
+  afterEach(() => {
     if (originalCodexHome === undefined) {
       delete process.env.CODEX_HOME;
     } else {

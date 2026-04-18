@@ -1,14 +1,8 @@
-import {
-  describe,
-  it,
-  expect,
-  beforeEach,
-  afterEach,
-  afterAll,
-  vi,
-} from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import http from 'http';
+import os from 'os';
+import path from 'path';
 import type { AddressInfo } from 'net';
 
 const originalCodexHome = process.env.CODEX_HOME;
@@ -105,6 +99,7 @@ describe('credential-proxy', () => {
   let upstreamServer: http.Server | undefined;
   let proxyPort: number;
   let upstreamPort: number;
+  let tempDir: string;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
   let upstreamHandler: (
     req: http.IncomingMessage,
@@ -112,7 +107,10 @@ describe('credential-proxy', () => {
   ) => void;
 
   beforeEach(async () => {
-    process.env.CODEX_HOME = '/tmp/nanoclaw-credential-proxy-tests';
+    tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'nanoclaw-credential-proxy-tests-'),
+    );
+    process.env.CODEX_HOME = tempDir;
     lastUpstreamHeaders = {};
     upstreamHandler = (req, res) => {
       lastUpstreamHeaders = { ...req.headers };
@@ -141,16 +139,21 @@ describe('credential-proxy', () => {
     __resetCodexOAuthCacheForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
-  });
-
-  afterAll(() => {
     if (originalCodexHome === undefined) {
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = originalCodexHome;
     }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
   });
+
+  function createTempCodexAuthPath(namePrefix: string): string {
+    return path.join(
+      tempDir,
+      `${namePrefix}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
+    );
+  }
 
   async function startProxy(env: Record<string, string>): Promise<number> {
     const mergedEnv = { ...env };
@@ -303,8 +306,10 @@ describe('credential-proxy', () => {
     );
     vi.stubGlobal('fetch', fetchMock as typeof fetch);
     const readSpy = vi.spyOn(fs, 'readFileSync');
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    const renameSpy = vi.spyOn(fs, 'renameSync');
 
-    const codexAuthPath = `/tmp/nanoclaw-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    const codexAuthPath = createTempCodexAuthPath('nanoclaw-codex-auth');
     fs.writeFileSync(
       codexAuthPath,
       makeCodexCliAuthJson({
@@ -334,6 +339,22 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['authorization']).toBe(
       `Bearer ${refreshedAccessToken}`,
     );
+    const refreshWriteCalls = writeSpy.mock.calls.filter(([, contents]) =>
+      typeof contents === 'string'
+        ? contents.includes('codex-refreshed-refresh')
+        : false,
+    );
+    expect(refreshWriteCalls).toHaveLength(1);
+    const atomicTempPath = String(refreshWriteCalls[0]?.[0]);
+    expect(atomicTempPath).not.toBe(codexAuthPath);
+    expect(path.dirname(atomicTempPath)).toBe(path.dirname(codexAuthPath));
+    expect(renameSpy).toHaveBeenCalledWith(atomicTempPath, codexAuthPath);
+    expect(
+      fs
+        .readdirSync(path.dirname(codexAuthPath))
+        .filter((name) => name.endsWith('.tmp')),
+    ).toEqual([]);
+
     const readsAfterFirstRequest = readSpy.mock.calls.filter(
       ([filePath]) => String(filePath) === codexAuthPath,
     ).length;
@@ -379,7 +400,9 @@ describe('credential-proxy', () => {
     });
     vi.stubGlobal('fetch', fetchMock as typeof fetch);
 
-    const codexAuthPath = `/tmp/nanoclaw-codex-auth-concurrent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    const codexAuthPath = createTempCodexAuthPath(
+      'nanoclaw-codex-auth-concurrent',
+    );
     fs.writeFileSync(
       codexAuthPath,
       makeCodexCliAuthJson({
@@ -420,6 +443,39 @@ describe('credential-proxy', () => {
     ]);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns generic 500 without leaking host details on codex resolve failure', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValue(
+        new Error('network timeout reading /Users/shin/.codex/auth.json'),
+      );
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    proxyPort = await startProxy({
+      OAS_CODEX_OAUTH_JSON: makeCodexCliAuthJson({
+        expiresAtMs: Date.now() - 60_000,
+        accountId: 'acct_123',
+      }),
+    });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe('Credential proxy credential resolution failed.');
+    expect(res.body).not.toContain('/Users/shin');
   });
 
   it('throws clear error when codex auth file is missing', () => {

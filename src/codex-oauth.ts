@@ -5,6 +5,18 @@ const OPENAI_CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const OPENAI_CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const EXPIRY_SKEW_MS = 30_000;
 
+export class CodexAuthFileNotFoundError extends Error {
+  readonly authPath: string;
+
+  constructor(authPath: string) {
+    super(
+      `[codex-oauth] Codex auth file was not found: ${authPath}. Run "codex login" or set OAS_CODEX_AUTH_PATH.`,
+    );
+    this.name = 'CodexAuthFileNotFoundError';
+    this.authPath = authPath;
+  }
+}
+
 interface CodexCliAuthFile {
   auth_mode?: string;
   tokens?: {
@@ -162,9 +174,7 @@ function readCodexAuthFile(authPath: string): string {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code === 'ENOENT') {
-      throw new Error(
-        `[codex-oauth] Codex auth file was not found: ${resolvedPath}. Run "codex login" or set OAS_CODEX_AUTH_PATH.`,
-      );
+      throw new CodexAuthFileNotFoundError(resolvedPath);
     }
     throw new Error(
       `[codex-oauth] Failed to read Codex auth file ${resolvedPath}: ${err instanceof Error ? err.message : String(err)}`,
@@ -256,6 +266,32 @@ function serializeCodexCliAuth(
   return JSON.stringify(updated, null, 2) + '\n';
 }
 
+function writeCodexAuthFileAtomic(authPath: string, contents: string): void {
+  const resolvedPath = path.resolve(authPath);
+  const dirPath = path.dirname(resolvedPath);
+  const baseName = path.basename(resolvedPath);
+  const tempPath = path.join(
+    dirPath,
+    `.${baseName}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+
+  let tempCreated = false;
+  try {
+    fs.writeFileSync(tempPath, contents, 'utf-8');
+    tempCreated = true;
+    fs.renameSync(tempPath, resolvedPath);
+  } catch (err) {
+    if (tempCreated || fs.existsSync(tempPath)) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        // noop: best-effort cleanup only
+      }
+    }
+    throw err;
+  }
+}
+
 function shouldRefresh(credentials: CodexOAuthCredentials): boolean {
   return Date.now() + EXPIRY_SKEW_MS >= credentials.expires;
 }
@@ -330,7 +366,7 @@ async function refreshCachedState(
 
     if (cached.authPath && !cached.oauthJson) {
       const serialized = serializeCodexCliAuth(cached.root, refreshed);
-      fs.writeFileSync(cached.authPath, serialized, 'utf-8');
+      writeCodexAuthFileAtomic(cached.authPath, serialized);
     }
 
     return refreshed;
