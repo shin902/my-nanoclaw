@@ -317,6 +317,15 @@ function resolveSessionProviderConfig(env: NodeJS.ProcessEnv): SessionProviderCo
     };
   }
 
+  if (env.CODEX_BASE_URL) {
+    return {
+      provider: 'codex',
+      model: DEFAULT_MODEL_BY_PROVIDER.codex,
+      apiKey: env.CODEX_API_KEY || 'placeholder',
+      baseURL: env.CODEX_BASE_URL,
+    };
+  }
+
   if (env.OAS_CODEX_OAUTH_JSON) {
     return {
       provider: 'codex',
@@ -326,7 +335,7 @@ function resolveSessionProviderConfig(env: NodeJS.ProcessEnv): SessionProviderCo
   }
 
   throw new Error(
-    'No provider credentials found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OAS_CODEX_OAUTH_JSON.',
+    'No provider credentials found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, CODEX_BASE_URL, or OAS_CODEX_OAUTH_JSON.',
   );
 }
 
@@ -886,7 +895,8 @@ async function main(): Promise<void> {
 
   // 認証情報はホスト側で注入される。
   // Anthropic/OpenAI は BASE_URL + placeholder を使ってプロキシ経由、
-  // Gemini/Codex の直接注入は ALLOW_DIRECT_SECRET_INJECTION=true の明示オプトイン時のみ許可される。
+  // Codex も CODEX_BASE_URL + placeholder を使ってプロキシ経由、
+  // Gemini の直接注入のみ ALLOW_DIRECT_SECRET_INJECTION=true の明示オプトイン時に許可される。
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
