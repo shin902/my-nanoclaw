@@ -70,16 +70,17 @@ private_key, .secret
 
 **プロバイダーごとの方針:**
 - Anthropic / OpenAI: 常にプロキシ経由（コンテナへはプレースホルダーのみ）
-- Gemini / Codex: SDK 制約により直接注入が必要。`ALLOW_DIRECT_SECRET_INJECTION=true` の明示オプトインがある場合のみ許可し、未設定時は起動拒否
+- Codex: 常にプロキシ経由（`~/.codex/auth.json` をホスト側で解決し、Bearer を注入）
+- Gemini: SDK 制約により直接注入が必要。`ALLOW_DIRECT_SECRET_INJECTION=true` の明示オプトインがある場合のみ許可し、未設定時は起動拒否
 
-`ALLOW_DIRECT_SECRET_INJECTION=true` を有効化すると、`GEMINI_API_KEY` または `OAS_CODEX_OAUTH_JSON` がコンテナ環境変数として露出します。これは既定の隔離モデルを弱めるため、信頼境界と運用リスクを理解した場合にのみ使用してください。
+`ALLOW_DIRECT_SECRET_INJECTION=true` を有効化すると、`GEMINI_API_KEY` がコンテナ環境変数として露出します。これは既定の隔離モデルを弱めるため、信頼境界と運用リスクを理解した場合にのみ使用してください。
 
 **仕組み：**
 1. ホストが `CREDENTIAL_PROXY_PORT` (デフォルト: 3001) で認証情報プロキシを開始する
-2. Anthropic/OpenAI の場合、コンテナは `*_BASE_URL=http://host.docker.internal:<port>` と `*_API_KEY=placeholder` を受け取る
+2. Anthropic/OpenAI/Codex の場合、コンテナは `*_BASE_URL=http://host.docker.internal:<port>` と `*_API_KEY=placeholder` を受け取る（Codex は `CODEX_BASE_URL`/`CODEX_API_KEY`）
 3. SDK はプレースホルダーを使ってプロキシへ API リクエストを送信する
 4. プロキシはプレースホルダー認証情報を削除し、本物の認証情報 (`x-api-key` または `Authorization: Bearer`) を注入して上流 API に転送する
-5. Gemini/Codex は明示オプトイン時のみ直接注入を許可し、未オプトインでは起動を拒否する
+5. Gemini は明示オプトイン時のみ直接注入を許可し、未オプトインでは起動を拒否する
 
 **マウントされないもの：**
 - WhatsApp セッション (`store/auth/`) - ホストのみ
