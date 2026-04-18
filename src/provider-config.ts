@@ -1,8 +1,11 @@
-import fs from 'fs';
-import path from 'path';
 import os from 'os';
+import path from 'path';
 
 import { readEnvFile } from './env.js';
+import {
+  validateCodexAuthFile,
+  validateCodexOAuthJson,
+} from './codex-oauth.js';
 
 export type LlmProvider = 'anthropic' | 'openai' | 'gemini' | 'codex';
 
@@ -13,6 +16,7 @@ export interface ActiveProviderConfig {
   apiKey?: string;
   upstreamBaseURL?: string;
   codexOAuthJson?: string;
+  codexAuthPath?: string;
 }
 
 const PROVIDER_PRIORITY: LlmProvider[] = [
@@ -53,30 +57,21 @@ function isDirectSecretInjectionEnabled(value: string | undefined): boolean {
   return value === 'true';
 }
 
-function resolveCodexAuthPath(envPath: string | undefined): string {
+export function resolveCodexAuthPath(envPath: string | undefined): string {
   if (envPath) {
     return envPath.startsWith('~')
       ? path.join(os.homedir(), envPath.slice(1))
       : envPath;
   }
+
   const codexHome = process.env.CODEX_HOME
     ? path.resolve(process.env.CODEX_HOME)
     : path.join(os.homedir(), '.codex');
   return path.join(codexHome, 'auth.json');
 }
 
-function readCodexAuthFile(authPath: string): string | undefined {
-  try {
-    const content = fs.readFileSync(authPath, 'utf-8');
-    JSON.parse(content);
-    return content;
-  } catch {
-    return undefined;
-  }
-}
-
 function requireDirectSecretInjectionOptIn(
-  provider: 'gemini' | 'codex',
+  provider: 'gemini',
   enabled: boolean,
 ): void {
   if (enabled) return;
@@ -137,17 +132,35 @@ export function detectActiveProviderConfig(): ActiveProviderConfig {
 
     if (provider === 'codex') {
       const codexAuthPath = resolveCodexAuthPath(env.OAS_CODEX_AUTH_PATH);
-      const codexOAuthJson =
-        env.OAS_CODEX_OAUTH_JSON || readCodexAuthFile(codexAuthPath);
+      const codexOAuthJson = env.OAS_CODEX_OAUTH_JSON;
+      const hasExplicitCodexAuthPath = Boolean(env.OAS_CODEX_AUTH_PATH);
+
       if (codexOAuthJson) {
-        requireDirectSecretInjectionOptIn(provider, allowDirectSecretInjection);
-        return {
-          provider,
-          usesCredentialProxy: false,
-          allowDirectSecretInjection,
-          codexOAuthJson,
-        };
+        validateCodexOAuthJson(codexOAuthJson);
+      } else {
+        try {
+          validateCodexAuthFile(codexAuthPath);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (
+            !hasExplicitCodexAuthPath &&
+            message.includes('Codex auth file was not found')
+          ) {
+            continue;
+          }
+          throw err;
+        }
       }
+
+      return {
+        provider,
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        upstreamBaseURL:
+          env.OPENAI_BASE_URL || DEFAULT_UPSTREAM_BASE_URL.openai,
+        codexAuthPath,
+        ...(codexOAuthJson ? { codexOAuthJson } : {}),
+      };
     }
   }
 
@@ -164,10 +177,7 @@ export function detectActiveProviderConfig(): ActiveProviderConfig {
 function assertDirectSecretInjectionAllowed(
   providerConfig: ActiveProviderConfig,
 ): void {
-  if (
-    providerConfig.provider !== 'gemini' &&
-    providerConfig.provider !== 'codex'
-  ) {
+  if (providerConfig.provider !== 'gemini') {
     return;
   }
 
@@ -215,12 +225,14 @@ export function buildContainerProviderEnv(
     };
   }
 
-  assertDirectSecretInjectionAllowed(providerConfig);
+  if (!providerConfig.usesCredentialProxy) {
+    throw new Error(
+      '[provider-config] codex provider must use credential proxy.',
+    );
+  }
+
   return {
-    OAS_CODEX_OAUTH_JSON: requiredValue(
-      providerConfig.codexOAuthJson,
-      'OAS_CODEX_OAUTH_JSON',
-      providerConfig.provider,
-    ),
+    CODEX_BASE_URL: proxyBaseUrl,
+    CODEX_API_KEY: 'placeholder',
   };
 }

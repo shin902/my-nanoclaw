@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockEnv: Record<string, string> = {};
 
@@ -10,6 +10,9 @@ import {
   buildContainerProviderEnv,
   detectActiveProviderConfig,
 } from './provider-config.js';
+import { makeCodexCliAuthJson } from './codex-oauth-test-helpers.js';
+
+const originalCodexHome = process.env.CODEX_HOME;
 
 function resetMockEnv(): void {
   for (const key of Object.keys(mockEnv)) {
@@ -20,6 +23,15 @@ function resetMockEnv(): void {
 describe('provider-config', () => {
   beforeEach(() => {
     resetMockEnv();
+    process.env.CODEX_HOME = '/tmp/nanoclaw-provider-config-tests';
+  });
+
+  afterAll(() => {
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
+    }
   });
 
   it('detects anthropic first when multiple provider keys exist', () => {
@@ -27,7 +39,9 @@ describe('provider-config', () => {
       ANTHROPIC_API_KEY: 'sk-ant',
       OPENAI_API_KEY: 'sk-openai',
       GEMINI_API_KEY: 'gem-key',
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
+      OAS_CODEX_OAUTH_JSON: makeCodexCliAuthJson({
+        expiresAtMs: Date.now() + 60_000,
+      }),
     });
 
     const config = detectActiveProviderConfig();
@@ -65,16 +79,17 @@ describe('provider-config', () => {
     expect(config.apiKey).toBe('gem-key');
   });
 
-  it('detects codex from oauth json when no API key providers exist and opt-in is enabled', () => {
+  it('detects codex from oauth json when no API key providers exist', () => {
     Object.assign(mockEnv, {
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
-      ALLOW_DIRECT_SECRET_INJECTION: 'true',
+      OAS_CODEX_OAUTH_JSON: makeCodexCliAuthJson({
+        expiresAtMs: Date.now() + 60_000,
+      }),
     });
 
     const config = detectActiveProviderConfig();
     expect(config.provider).toBe('codex');
-    expect(config.usesCredentialProxy).toBe(false);
-    expect(config.allowDirectSecretInjection).toBe(true);
+    expect(config.usesCredentialProxy).toBe(true);
+    expect(config.allowDirectSecretInjection).toBe(false);
     expect(config.codexOAuthJson).toContain('access');
   });
 
@@ -88,13 +103,13 @@ describe('provider-config', () => {
     );
   });
 
-  it('throws when codex oauth is set without direct injection opt-in', () => {
+  it('throws when codex auth path is set but file does not exist', () => {
     Object.assign(mockEnv, {
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
+      OAS_CODEX_AUTH_PATH: '/tmp/nanoclaw-missing-codex-auth.json',
     });
 
     expect(() => detectActiveProviderConfig()).toThrow(
-      'ALLOW_DIRECT_SECRET_INJECTION=true is not set',
+      'Codex auth file was not found',
     );
   });
 
@@ -157,20 +172,20 @@ describe('provider-config', () => {
     expect(env).toEqual({ GEMINI_API_KEY: 'gem-key' });
   });
 
-  it('builds codex oauth injection env', () => {
+  it('builds codex proxy env', () => {
     const env = buildContainerProviderEnv(
       {
         provider: 'codex',
-        usesCredentialProxy: false,
-        allowDirectSecretInjection: true,
-        codexOAuthJson: '{"access":"a","refresh":"r","expires":1}',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
       },
       'host.docker.internal',
       3001,
     );
 
     expect(env).toEqual({
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
+      CODEX_BASE_URL: 'http://host.docker.internal:3001',
+      CODEX_API_KEY: 'placeholder',
     });
   });
 
