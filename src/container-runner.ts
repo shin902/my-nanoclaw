@@ -301,7 +301,7 @@ function buildContainerArgs(
 
   // プロバイダーごとに必要な環境変数のみを注入する。
   // Anthropic/OpenAI はプロキシ + placeholder、Gemini は直接キー注入、
-  // Codex は OAuth JSON を渡してコンテナ側で codexOAuth を構築する。
+  // Codex は CODEX_BASE_URL + placeholder でプロキシ経由に統一する。
   for (const [key, value] of Object.entries(providerEnv)) {
     args.push('-e', `${key}=${value}`);
   }

@@ -382,12 +382,13 @@ describe('container-runner timeout behavior', () => {
     expect(joined).not.toContain('ANTHROPIC_BASE_URL=');
   });
 
-  it('injects Codex oauth json when provider env mapping switches', async () => {
+  it('injects Codex proxy env when provider env mapping switches', async () => {
     for (const key of Object.keys(mockContainerProviderEnv)) {
       delete mockContainerProviderEnv[key];
     }
     Object.assign(mockContainerProviderEnv, {
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
+      CODEX_BASE_URL: 'http://host.docker.internal:3001',
+      CODEX_API_KEY: 'placeholder',
     });
 
     const resultPromise = runContainerAgent(testGroup, testInput, () => {});
@@ -404,9 +405,8 @@ describe('container-runner timeout behavior', () => {
     const spawnCalls = vi.mocked(spawn).mock.calls;
     const args = spawnCalls[spawnCalls.length - 1][1] as string[];
     const joined = args.join(' ');
-    expect(joined).toContain(
-      '-e OAS_CODEX_OAUTH_JSON={"access":"a","refresh":"r","expires":1}',
-    );
+    expect(joined).toContain('-e CODEX_BASE_URL=http://host.docker.internal:3001');
+    expect(joined).toContain('-e CODEX_API_KEY=placeholder');
     expect(joined).not.toContain('OPENAI_BASE_URL=');
     expect(joined).not.toContain('ANTHROPIC_BASE_URL=');
   });
