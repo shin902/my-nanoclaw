@@ -1,3 +1,5 @@
+import os from 'os';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockEnv: Record<string, string> = {};
@@ -9,6 +11,7 @@ vi.mock('./env.js', () => ({
 import {
   buildContainerProviderEnv,
   detectActiveProviderConfig,
+  resolveCodexAuthPath,
 } from './provider-config.js';
 import { makeCodexCliAuthJson } from './codex-oauth-test-helpers.js';
 
@@ -116,6 +119,26 @@ describe('provider-config', () => {
   it('throws when no supported provider config is present', () => {
     expect(() => detectActiveProviderConfig()).toThrow(
       'No supported provider credentials found',
+    );
+  });
+
+  it('expands codex auth path when env path is ~/...', () => {
+    expect(resolveCodexAuthPath('~/.codex/auth.json')).toBe(
+      `${os.homedir()}/.codex/auth.json`,
+    );
+  });
+
+  it('expands codex auth path when env path is exactly ~', () => {
+    expect(resolveCodexAuthPath('~')).toBe(os.homedir());
+  });
+
+  it('does not expand codex auth path for absolute or relative paths', () => {
+    expect(resolveCodexAuthPath('/tmp/auth.json')).toBe('/tmp/auth.json');
+    expect(resolveCodexAuthPath('relative/auth.json')).toBe(
+      'relative/auth.json',
+    );
+    expect(resolveCodexAuthPath('~someone/auth.json')).toBe(
+      '~someone/auth.json',
     );
   });
 

@@ -286,6 +286,85 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['authorization']).toBe(`Bearer ${accessToken}`);
   });
 
+  it('codex mode reloads auth file updates without restarting proxy', async () => {
+    const firstAccessToken = makeCodexAccessToken(
+      Date.now() + 120_000,
+      'acct_123',
+    );
+    const secondAccessToken = makeCodexAccessToken(
+      Date.now() + 240_000,
+      'acct_123',
+    );
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    const codexAuthPath = createTempCodexAuthPath(
+      'nanoclaw-codex-auth-file-update',
+    );
+    fs.writeFileSync(
+      codexAuthPath,
+      JSON.stringify({
+        auth_mode: 'oauth',
+        tokens: {
+          access_token: firstAccessToken,
+          refresh_token: 'refresh-token-a',
+          account_id: 'acct_123',
+        },
+      }),
+    );
+
+    proxyPort = await startProxy({
+      OAS_CODEX_AUTH_PATH: codexAuthPath,
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      `Bearer ${firstAccessToken}`,
+    );
+
+    fs.writeFileSync(
+      codexAuthPath,
+      JSON.stringify({
+        auth_mode: 'oauth',
+        tokens: {
+          access_token: secondAccessToken,
+          refresh_token: 'refresh-token-updated-b-longer',
+          account_id: 'acct_123',
+        },
+      }),
+    );
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      `Bearer ${secondAccessToken}`,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('codex mode refreshes expired token once and reuses refreshed credentials', async () => {
     const refreshedAccessToken = makeCodexAccessToken(
       Date.now() + 3_600_000,
@@ -317,6 +396,7 @@ describe('credential-proxy', () => {
         accountId: 'acct_123',
       }),
     );
+    fs.chmodSync(codexAuthPath, 0o644);
 
     proxyPort = await startProxy({
       OAS_CODEX_AUTH_PATH: codexAuthPath,
@@ -377,6 +457,89 @@ describe('credential-proxy', () => {
       ([filePath]) => String(filePath) === codexAuthPath,
     ).length;
     expect(readsAfterSecondRequest).toBe(readsAfterFirstRequest);
+
+    const authFileMode = fs.statSync(codexAuthPath).mode & 0o777;
+    expect(authFileMode).toBe(0o600);
+  });
+
+  it('codex mode retries refresh with reloaded auth file when initial refresh fails', async () => {
+    const refreshedAccessToken = makeCodexAccessToken(
+      Date.now() + 3_600_000,
+      'acct_123',
+    );
+    const codexAuthPath = createTempCodexAuthPath(
+      'nanoclaw-codex-auth-refresh-retry',
+    );
+    fs.writeFileSync(
+      codexAuthPath,
+      makeCodexCliAuthJson({
+        expiresAtMs: Date.now() - 60_000,
+        accountId: 'acct_123',
+        refreshToken: 'stale-refresh-token',
+      }),
+    );
+
+    const refreshBodies: string[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body =
+        init?.body instanceof URLSearchParams
+          ? init.body.toString()
+          : String(init?.body || '');
+      refreshBodies.push(body);
+
+      if (body.includes('refresh_token=stale-refresh-token')) {
+        fs.writeFileSync(
+          codexAuthPath,
+          makeCodexCliAuthJson({
+            expiresAtMs: Date.now() - 30_000,
+            accountId: 'acct_123',
+            refreshToken: 'fresh-refresh-token',
+          }),
+        );
+        return new Response('invalid_grant', { status: 400 });
+      }
+
+      if (body.includes('refresh_token=fresh-refresh-token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: refreshedAccessToken,
+            refresh_token: 'fresh-refresh-token-next',
+            expires_in: 3600,
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+
+      return new Response('unexpected refresh token', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    proxyPort = await startProxy({
+      OAS_CODEX_AUTH_PATH: codexAuthPath,
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refreshBodies[0]).toContain('refresh_token=stale-refresh-token');
+    expect(refreshBodies[1]).toContain('refresh_token=fresh-refresh-token');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      `Bearer ${refreshedAccessToken}`,
+    );
   });
 
   it('codex mode deduplicates concurrent refresh calls', async () => {

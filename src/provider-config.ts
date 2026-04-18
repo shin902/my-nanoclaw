@@ -60,9 +60,13 @@ function isDirectSecretInjectionEnabled(value: string | undefined): boolean {
 
 export function resolveCodexAuthPath(envPath: string | undefined): string {
   if (envPath) {
-    return envPath.startsWith('~')
-      ? path.join(os.homedir(), envPath.slice(1))
-      : envPath;
+    if (envPath === '~') {
+      return os.homedir();
+    }
+    if (envPath.startsWith('~/')) {
+      return path.join(os.homedir(), envPath.slice(2));
+    }
+    return envPath;
   }
 
   const codexHome = process.env.CODEX_HOME

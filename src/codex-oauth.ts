@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -35,11 +36,14 @@ interface CodexOAuthSource {
   sourceKey: string;
   authPath?: string;
   oauthJson?: string;
+  parsedOauth?: ParsedCodexCliAuth;
 }
 
 interface CachedCodexState extends CodexOAuthSource {
   root: CodexCliAuthFile;
   credentials: CodexOAuthCredentials;
+  authFileFingerprint?: string;
+  authFileMode?: number;
 }
 
 export interface CodexOAuthCredentials {
@@ -182,13 +186,96 @@ function readCodexAuthFile(authPath: string): string {
   }
 }
 
+function buildCredentialsFingerprint(
+  credentials: CodexOAuthCredentials,
+): string {
+  const payload = JSON.stringify({
+    access: credentials.access,
+    refresh: credentials.refresh,
+    accountId: credentials.accountId || '',
+  });
+  return createHash('sha256').update(payload).digest('hex');
+}
+
+function normalizeOwnerOnlyFileMode(rawMode: number): number {
+  return rawMode & 0o600;
+}
+
+function buildAuthFileFingerprint(stats: fs.Stats): string {
+  return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}`;
+}
+
+function readCodexAuthFileSnapshot(authPath: string): {
+  fingerprint: string;
+  mode: number;
+} {
+  const resolvedPath = path.resolve(authPath);
+
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(resolvedPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') {
+      throw new CodexAuthFileNotFoundError(resolvedPath);
+    }
+    throw new Error(
+      `[codex-oauth] Failed to stat Codex auth file ${resolvedPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  return {
+    fingerprint: buildAuthFileFingerprint(stats),
+    mode: normalizeOwnerOnlyFileMode(stats.mode & 0o777),
+  };
+}
+
+function resolveCodexAuthFileWriteMode(
+  authPath: string,
+  modeHint?: number,
+): number {
+  if (typeof modeHint === 'number') {
+    return normalizeOwnerOnlyFileMode(modeHint);
+  }
+
+  const resolvedPath = path.resolve(authPath);
+  try {
+    const stats = fs.statSync(resolvedPath);
+    return normalizeOwnerOnlyFileMode(stats.mode & 0o777);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') {
+      return 0o600;
+    }
+    throw new Error(
+      `[codex-oauth] Failed to stat Codex auth file ${resolvedPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function parseAuthFileAtPath(authPath: string): {
+  parsed: ParsedCodexCliAuth;
+  snapshot: { fingerprint: string; mode: number };
+} {
+  const snapshot = readCodexAuthFileSnapshot(authPath);
+  const raw = readCodexAuthFile(authPath);
+  const parsed = parseCodexOAuthJsonInput(raw, `Codex auth file (${authPath})`);
+
+  return { parsed, snapshot };
+}
+
 function resolveSource(
   options: ResolveCodexOAuthApiKeyOptions,
 ): CodexOAuthSource {
   if (options.oauthJson) {
+    const parsedOauth = parseCodexOAuthJsonInput(
+      options.oauthJson,
+      'OAS_CODEX_OAUTH_JSON',
+    );
     return {
-      sourceKey: `oauth-json:${options.oauthJson}`,
+      sourceKey: `oauth-json:${buildCredentialsFingerprint(parsedOauth.credentials)}`,
       oauthJson: options.oauthJson,
+      parsedOauth,
     };
   }
 
@@ -207,13 +294,13 @@ function resolveSource(
 
 function loadCachedState(source: CodexOAuthSource): CachedCodexState {
   if (source.oauthJson) {
-    const parsed = parseCodexOAuthJsonInput(
-      source.oauthJson,
-      'OAS_CODEX_OAUTH_JSON',
-    );
+    const parsed =
+      source.parsedOauth ||
+      parseCodexOAuthJsonInput(source.oauthJson, 'OAS_CODEX_OAUTH_JSON');
 
     return {
-      ...source,
+      sourceKey: source.sourceKey,
+      oauthJson: source.oauthJson,
       root: parsed.root,
       credentials: parsed.credentials,
     };
@@ -225,16 +312,15 @@ function loadCachedState(source: CodexOAuthSource): CachedCodexState {
     );
   }
 
-  const raw = readCodexAuthFile(source.authPath);
-  const parsed = parseCodexOAuthJsonInput(
-    raw,
-    `Codex auth file (${source.authPath})`,
-  );
+  const { parsed, snapshot } = parseAuthFileAtPath(source.authPath);
 
   return {
-    ...source,
+    sourceKey: source.sourceKey,
+    authPath: source.authPath,
     root: parsed.root,
     credentials: parsed.credentials,
+    authFileFingerprint: snapshot.fingerprint,
+    authFileMode: snapshot.mode,
   };
 }
 
@@ -266,10 +352,15 @@ function serializeCodexCliAuth(
   return JSON.stringify(updated, null, 2) + '\n';
 }
 
-function writeCodexAuthFileAtomic(authPath: string, contents: string): void {
+function writeCodexAuthFileAtomic(
+  authPath: string,
+  contents: string,
+  modeHint?: number,
+): void {
   const resolvedPath = path.resolve(authPath);
   const dirPath = path.dirname(resolvedPath);
   const baseName = path.basename(resolvedPath);
+  const writeMode = resolveCodexAuthFileWriteMode(resolvedPath, modeHint);
   const tempPath = path.join(
     dirPath,
     `.${baseName}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(16).slice(2)}.tmp`,
@@ -277,9 +368,13 @@ function writeCodexAuthFileAtomic(authPath: string, contents: string): void {
 
   let tempCreated = false;
   try {
-    fs.writeFileSync(tempPath, contents, 'utf-8');
+    fs.writeFileSync(tempPath, contents, {
+      encoding: 'utf-8',
+      mode: writeMode,
+    });
     tempCreated = true;
     fs.renameSync(tempPath, resolvedPath);
+    fs.chmodSync(resolvedPath, writeMode);
   } catch (err) {
     if (tempCreated || fs.existsSync(tempPath)) {
       try {
@@ -290,6 +385,36 @@ function writeCodexAuthFileAtomic(authPath: string, contents: string): void {
     }
     throw err;
   }
+}
+
+function maybeReloadCachedAuthFileIfChanged(cached: CachedCodexState): void {
+  if (!cached.authPath || cached.oauthJson) {
+    return;
+  }
+
+  const snapshot = readCodexAuthFileSnapshot(cached.authPath);
+  if (cached.authFileFingerprint === snapshot.fingerprint) {
+    cached.authFileMode = snapshot.mode;
+    return;
+  }
+
+  const { parsed } = parseAuthFileAtPath(cached.authPath);
+  cached.root = parsed.root;
+  cached.credentials = parsed.credentials;
+  cached.authFileFingerprint = snapshot.fingerprint;
+  cached.authFileMode = snapshot.mode;
+}
+
+function forceReloadCachedAuthFile(cached: CachedCodexState): void {
+  if (!cached.authPath || cached.oauthJson) {
+    return;
+  }
+
+  const { parsed, snapshot } = parseAuthFileAtPath(cached.authPath);
+  cached.root = parsed.root;
+  cached.credentials = parsed.credentials;
+  cached.authFileFingerprint = snapshot.fingerprint;
+  cached.authFileMode = snapshot.mode;
 }
 
 function shouldRefresh(credentials: CodexOAuthCredentials): boolean {
@@ -366,7 +491,14 @@ async function refreshCachedState(
 
     if (cached.authPath && !cached.oauthJson) {
       const serialized = serializeCodexCliAuth(cached.root, refreshed);
-      writeCodexAuthFileAtomic(cached.authPath, serialized);
+      writeCodexAuthFileAtomic(
+        cached.authPath,
+        serialized,
+        cached.authFileMode,
+      );
+      const snapshot = readCodexAuthFileSnapshot(cached.authPath);
+      cached.authFileFingerprint = snapshot.fingerprint;
+      cached.authFileMode = snapshot.mode;
     }
 
     return refreshed;
@@ -400,8 +532,21 @@ export async function resolveCodexOAuthApiKey(
   const source = resolveSource(options);
   const cached = getOrLoadCachedState(source);
 
+  maybeReloadCachedAuthFileIfChanged(cached);
+
   if (shouldRefresh(cached.credentials)) {
-    await refreshCachedState(cached);
+    try {
+      await refreshCachedState(cached);
+    } catch (err) {
+      if (!cached.authPath || cached.oauthJson) {
+        throw err;
+      }
+
+      forceReloadCachedAuthFile(cached);
+      if (shouldRefresh(cached.credentials)) {
+        await refreshCachedState(cached);
+      }
+    }
   }
 
   return {
@@ -413,4 +558,14 @@ export async function resolveCodexOAuthApiKey(
 export function __resetCodexOAuthCacheForTests(): void {
   cachedCodexStateBySource.clear();
   refreshInFlightBySource.clear();
+}
+
+export function __getCodexOAuthCacheKeysForTests(): string[] {
+  return [...cachedCodexStateBySource.keys()];
+}
+
+export function __resolveCodexAuthFileWriteModeForTests(
+  authPath: string,
+): number {
+  return resolveCodexAuthFileWriteMode(authPath);
 }
