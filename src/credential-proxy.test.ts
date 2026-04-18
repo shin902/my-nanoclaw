@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
+
+const originalCodexHome = process.env.CODEX_HOME;
 
 const mockEnv: Record<string, string> = {};
 vi.mock('./env.js', () => ({
@@ -12,6 +15,11 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { startCredentialProxy } from './credential-proxy.js';
+import { __resetCodexOAuthCacheForTests } from './codex-oauth.js';
+import {
+  makeCodexAccessToken,
+  makeCodexCliAuthJson,
+} from './codex-oauth-test-helpers.js';
 
 function makeRequest(
   port: number,
@@ -96,6 +104,7 @@ describe('credential-proxy', () => {
   ) => void;
 
   beforeEach(async () => {
+    process.env.CODEX_HOME = '/tmp/nanoclaw-credential-proxy-tests';
     lastUpstreamHeaders = {};
     upstreamHandler = (req, res) => {
       lastUpstreamHeaders = { ...req.headers };
@@ -121,7 +130,18 @@ describe('credential-proxy', () => {
       await new Promise<void>((r) => upstreamServer!.close(() => r()));
       upstreamServer = undefined;
     }
+    __resetCodexOAuthCacheForTests();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+  });
+
+  afterAll(() => {
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
+    }
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
@@ -130,6 +150,12 @@ describe('credential-proxy', () => {
       mergedEnv.ANTHROPIC_BASE_URL = `http://127.0.0.1:${upstreamPort}`;
     }
     if (mergedEnv.OPENAI_API_KEY && !mergedEnv.OPENAI_BASE_URL) {
+      mergedEnv.OPENAI_BASE_URL = `http://127.0.0.1:${upstreamPort}`;
+    }
+    if (
+      (mergedEnv.OAS_CODEX_OAUTH_JSON || mergedEnv.OAS_CODEX_AUTH_PATH) &&
+      !mergedEnv.OPENAI_BASE_URL
+    ) {
       mergedEnv.OPENAI_BASE_URL = `http://127.0.0.1:${upstreamPort}`;
     }
 
@@ -220,24 +246,187 @@ describe('credential-proxy', () => {
     expect(res.body).toContain('disabled');
   });
 
-  it('returns 503 in disabled mode for codex oauth provider', async () => {
+  it('codex mode replaces Authorization with Bearer oauth access token', async () => {
+    const accessToken = makeCodexAccessToken(Date.now() + 60_000, 'acct_123');
     proxyPort = await startProxy({
-      OAS_CODEX_OAUTH_JSON: '{"access":"a","refresh":"r","expires":1}',
-      ALLOW_DIRECT_SECRET_INJECTION: 'true',
+      OAS_CODEX_OAUTH_JSON: JSON.stringify({
+        auth_mode: 'oauth',
+        tokens: {
+          access_token: accessToken,
+          refresh_token: 'codex-refresh-token',
+          account_id: 'acct_123',
+        },
+      }),
     });
 
-    const res = await makeRequest(
+    await makeRequest(
       proxyPort,
       {
         method: 'POST',
-        path: '/v1/messages',
-        headers: { 'content-type': 'application/json' },
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
       },
       '{}',
     );
 
-    expect(res.statusCode).toBe(503);
-    expect(res.body).toContain('disabled');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      `Bearer ${accessToken}`,
+    );
+  });
+
+  it('codex mode refreshes expired token once and reuses refreshed credentials', async () => {
+    const refreshedAccessToken = makeCodexAccessToken(
+      Date.now() + 3_600_000,
+      'acct_123',
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: refreshedAccessToken,
+          refresh_token: 'codex-refreshed-refresh',
+          expires_in: 3600,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+    const readSpy = vi.spyOn(fs, 'readFileSync');
+
+    const codexAuthPath =
+      `/tmp/nanoclaw-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    fs.writeFileSync(
+      codexAuthPath,
+      makeCodexCliAuthJson({
+        expiresAtMs: Date.now() - 60_000,
+        accountId: 'acct_123',
+      }),
+    );
+
+    proxyPort = await startProxy({
+      OAS_CODEX_AUTH_PATH: codexAuthPath,
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      `Bearer ${refreshedAccessToken}`,
+    );
+    const readsAfterFirstRequest = readSpy.mock.calls.filter(
+      ([filePath]) => String(filePath) === codexAuthPath,
+    ).length;
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const readsAfterSecondRequest = readSpy.mock.calls.filter(
+      ([filePath]) => String(filePath) === codexAuthPath,
+    ).length;
+    expect(readsAfterSecondRequest).toBe(readsAfterFirstRequest);
+  });
+
+  it('codex mode deduplicates concurrent refresh calls', async () => {
+    const refreshedAccessToken = makeCodexAccessToken(
+      Date.now() + 3_600_000,
+      'acct_123',
+    );
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(
+        JSON.stringify({
+          access_token: refreshedAccessToken,
+          refresh_token: 'codex-refreshed-refresh',
+          expires_in: 3600,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    const codexAuthPath =
+      `/tmp/nanoclaw-codex-auth-concurrent-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+    fs.writeFileSync(
+      codexAuthPath,
+      makeCodexCliAuthJson({
+        expiresAtMs: Date.now() - 60_000,
+        accountId: 'acct_123',
+      }),
+    );
+
+    proxyPort = await startProxy({
+      OAS_CODEX_AUTH_PATH: codexAuthPath,
+    });
+
+    await Promise.all([
+      makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/responses',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer placeholder',
+          },
+        },
+        '{}',
+      ),
+      makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/responses',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer placeholder',
+          },
+        },
+        '{}',
+      ),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws clear error when codex auth file is missing', () => {
+    Object.assign(mockEnv, {
+      OAS_CODEX_AUTH_PATH: '/tmp/nanoclaw-missing-codex-auth.json',
+      OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
+    });
+
+    expect(() => startCredentialProxy(0)).toThrow(
+      'Codex auth file was not found',
+    );
   });
 
   it('throws when no supported provider key is configured', () => {
