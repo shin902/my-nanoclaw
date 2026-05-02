@@ -393,6 +393,184 @@ describe('rss-poller', () => {
     expect(sentMessages[1].text).toContain('https://example.com/no-date');
   });
 
+  it('pollOnce handles Atom feed with object-form link', async () => {
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Atom Article</title>
+    <link href="https://example.com/atom-article"/>
+    <id>urn:uuid:atom-1</id>
+    <published>2024-01-01T00:00:00Z</published>
+  </entry>
+</feed>`;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, text: async () => atomXml }),
+    );
+
+    const sentMessages: Array<{ jid: string; text: string }> = [];
+    await pollOnce({
+      sendMessage: async (jid, text) => {
+        sentMessages.push({ jid, text });
+      },
+      registeredGroups: () => ({ 'dc:123': {} }),
+      getConfig: () => [
+        { jid: 'dc:123', feeds: [{ url: 'https://example.com/atom' }] },
+      ],
+      burstDelayMs: 0,
+    });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].text).toContain('https://example.com/atom-article');
+  });
+
+  it('pollOnce handles Atom feed with array-form link (explicit rel=alternate)', async () => {
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Atom Article</title>
+    <link rel="alternate" href="https://example.com/atom-article"/>
+    <link rel="self" href="https://feeds.example.com/atom"/>
+    <id>urn:uuid:atom-2</id>
+    <published>2024-01-01T00:00:00Z</published>
+  </entry>
+</feed>`;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, text: async () => atomXml }),
+    );
+
+    const sentMessages: Array<{ jid: string; text: string }> = [];
+    await pollOnce({
+      sendMessage: async (jid, text) => {
+        sentMessages.push({ jid, text });
+      },
+      registeredGroups: () => ({ 'dc:123': {} }),
+      getConfig: () => [
+        { jid: 'dc:123', feeds: [{ url: 'https://example.com/atom' }] },
+      ],
+      burstDelayMs: 0,
+    });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].text).toContain('https://example.com/atom-article');
+    expect(sentMessages[0].text).not.toContain('feeds.example.com');
+  });
+
+  it('pollOnce handles Atom feed with array-form link (rel omitted defaults to alternate)', async () => {
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Atom Article</title>
+    <link href="https://example.com/atom-article"/>
+    <link rel="self" href="https://feeds.example.com/atom"/>
+    <id>urn:uuid:atom-3</id>
+    <published>2024-01-01T00:00:00Z</published>
+  </entry>
+</feed>`;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, text: async () => atomXml }),
+    );
+
+    const sentMessages: Array<{ jid: string; text: string }> = [];
+    await pollOnce({
+      sendMessage: async (jid, text) => {
+        sentMessages.push({ jid, text });
+      },
+      registeredGroups: () => ({ 'dc:123': {} }),
+      getConfig: () => [
+        { jid: 'dc:123', feeds: [{ url: 'https://example.com/atom' }] },
+      ],
+      burstDelayMs: 0,
+    });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].text).toContain('https://example.com/atom-article');
+    expect(sentMessages[0].text).not.toContain('feeds.example.com');
+  });
+
+  it('pollOnce delivers Atom entries in published ascending order', async () => {
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Newer</title>
+    <link href="https://example.com/newer"/>
+    <id>urn:uuid:newer</id>
+    <published>2024-01-03T00:00:00Z</published>
+  </entry>
+  <entry>
+    <title>Older</title>
+    <link href="https://example.com/older"/>
+    <id>urn:uuid:older</id>
+    <published>2024-01-01T00:00:00Z</published>
+  </entry>
+</feed>`;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, text: async () => atomXml }),
+    );
+
+    const sentMessages: Array<{ jid: string; text: string }> = [];
+    await pollOnce({
+      sendMessage: async (jid, text) => {
+        sentMessages.push({ jid, text });
+      },
+      registeredGroups: () => ({ 'dc:123': {} }),
+      getConfig: () => [
+        { jid: 'dc:123', feeds: [{ url: 'https://example.com/atom' }] },
+      ],
+      burstDelayMs: 0,
+    });
+
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages[0].text).toContain('https://example.com/older');
+    expect(sentMessages[1].text).toContain('https://example.com/newer');
+  });
+
+  it('pollOnce delivers Atom entries sorted by updated when published is absent', async () => {
+    const atomXml = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Newer</title>
+    <link href="https://example.com/newer"/>
+    <id>urn:uuid:newer</id>
+    <updated>2024-01-03T00:00:00Z</updated>
+  </entry>
+  <entry>
+    <title>Older</title>
+    <link href="https://example.com/older"/>
+    <id>urn:uuid:older</id>
+    <updated>2024-01-01T00:00:00Z</updated>
+  </entry>
+</feed>`;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, text: async () => atomXml }),
+    );
+
+    const sentMessages: Array<{ jid: string; text: string }> = [];
+    await pollOnce({
+      sendMessage: async (jid, text) => {
+        sentMessages.push({ jid, text });
+      },
+      registeredGroups: () => ({ 'dc:123': {} }),
+      getConfig: () => [
+        { jid: 'dc:123', feeds: [{ url: 'https://example.com/atom' }] },
+      ],
+      burstDelayMs: 0,
+    });
+
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages[0].text).toContain('https://example.com/older');
+    expect(sentMessages[1].text).toContain('https://example.com/newer');
+  });
+
   it('pollOnce continues on fetch failure without throwing', async () => {
     vi.stubGlobal(
       'fetch',

@@ -13,12 +13,11 @@ const xmlParser = new XMLParser({
   processEntities: true,
 });
 
+type AtomLinkObject = { '@_href'?: string; '@_rel'?: string };
+
 interface RssItem {
   title?: string;
-  link?:
-    | string
-    | { '@_href'?: string }
-    | Array<{ '@_href'?: string; '@_rel'?: string }>;
+  link?: string | AtomLinkObject | AtomLinkObject[];
   guid?: string | { '#text'?: string; '@_isPermaLink'?: string };
   id?: string;
   pubDate?: string;
@@ -27,15 +26,16 @@ interface RssItem {
   description?: string;
 }
 
-function extractLink(item: RssItem): string | undefined {
+function extractLink(item: RssItem): string {
   const l = item.link;
-  if (!l) return undefined;
-  if (typeof l === 'string') return l;
+  if (!l) return '';
+  if (typeof l === 'string') return l.trim();
   if (Array.isArray(l)) {
-    const alt = l.find((x) => x['@_rel'] === 'alternate') ?? l[0];
-    return alt?.['@_href'];
+    // RFC 4287: rel 省略は rel="alternate" と同義
+    const alt = l.find((x) => !x['@_rel'] || x['@_rel'] === 'alternate') ?? l[0];
+    return alt?.['@_href']?.trim() ?? '';
   }
-  return l['@_href'];
+  return l['@_href']?.trim() ?? '';
 }
 
 function extractGuid(item: RssItem, feedUrl: string): string {
@@ -52,14 +52,11 @@ function extractGuid(item: RssItem, feedUrl: string): string {
   return `${feedUrl}#${item.title || 'untitled'}`;
 }
 
-function parseTime(d?: string): number {
+function parseTime(item: RssItem): number {
+  const d = item.pubDate ?? item.published ?? item.updated;
   if (!d) return Infinity;
   const t = new Date(d).getTime();
   return Number.isNaN(t) ? Infinity : t;
-}
-
-function itemDate(item: RssItem): string | undefined {
-  return item.pubDate ?? item.published ?? item.updated;
 }
 
 function sortByPubDate(
@@ -70,7 +67,7 @@ function sortByPubDate(
   // JS sort is stable (ES2019+). Items without pubDate sort to the end via Infinity.
   return [...items]
     .reverse()
-    .sort((a, b) => parseTime(itemDate(a.item)) - parseTime(itemDate(b.item)));
+    .sort((a, b) => parseTime(a.item) - parseTime(b.item));
 }
 
 async function fetchFeed(
@@ -167,7 +164,7 @@ export async function pollOnce(deps: RssPollerDeps): Promise<void> {
         const entry = sorted[i];
         const label = feed.name || feed.url;
         const title = entry.item.title?.trim() || '(no title)';
-        const link = extractLink(entry.item)?.trim() || '';
+        const link = extractLink(entry.item);
         const text = link
           ? `📰 **${label}**: ${title}\n${link}`
           : `📰 **${label}**: ${title}`;
