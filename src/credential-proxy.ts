@@ -14,7 +14,7 @@ const PROVIDER_ROUTE_PREFIX = '/__provider/';
 
 interface ProxyTarget {
   name: string;
-  provider: 'anthropic' | 'openai';
+  provider: 'anthropic' | 'openai' | 'opencode-go';
   apiKey: string;
   upstreamBaseURL: string;
 }
@@ -45,7 +45,7 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
 
 function injectAuthHeaders(
   headers: Record<string, string | number | string[] | undefined>,
-  provider: 'anthropic' | 'openai',
+  provider: 'anthropic' | 'openai' | 'opencode-go',
   apiKey: string,
 ): void {
   if (provider === 'anthropic') {
@@ -68,7 +68,11 @@ function buildProxyTargets(): Record<string, ProxyTarget> {
   const targets: Record<string, ProxyTarget> = {};
 
   for (const [name, provider] of Object.entries(resolvedConfig.providers)) {
-    if (provider.provider !== 'anthropic' && provider.provider !== 'openai') {
+    if (
+      provider.provider !== 'anthropic' &&
+      provider.provider !== 'openai' &&
+      provider.provider !== 'opencode-go'
+    ) {
       continue;
     }
     targets[name] = {

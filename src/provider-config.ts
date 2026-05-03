@@ -6,7 +6,7 @@ import YAML from 'yaml';
 
 import { readEnvFile } from './env.js';
 
-export type LlmProvider = 'anthropic' | 'openai' | 'google' | 'codex';
+export type LlmProvider = 'anthropic' | 'openai' | 'google' | 'codex' | 'opencode-go';
 
 export interface ProviderConfig {
   name: string;
@@ -46,6 +46,7 @@ const PROVIDER_PRIORITY: LlmProvider[] = [
   'openai',
   'google',
   'codex',
+  'opencode-go',
 ];
 
 const ENV_KEYS = [
@@ -60,12 +61,16 @@ const ENV_KEYS = [
   'CODEX_MODEL',
   'OAS_CODEX_OAUTH_JSON',
   'OAS_CODEX_AUTH_PATH',
+  'OPENCODE_GO_API_KEY',
+  'OPENCODE_GO_BASE_URL',
+  'OPENCODE_GO_MODEL',
   'ALLOW_DIRECT_SECRET_INJECTION',
 ] as const;
 
-const DEFAULT_UPSTREAM_BASE_URL: Record<'anthropic' | 'openai', string> = {
+const DEFAULT_UPSTREAM_BASE_URL: Record<'anthropic' | 'openai' | 'opencode-go', string> = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com',
+  'opencode-go': 'https://opencode.ai/zen/go/v1',
 };
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProvider, string> = {
@@ -73,6 +78,7 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProvider, string> = {
   openai: 'gpt-4.1-mini',
   google: 'gemini-2.5-flash',
   codex: 'gpt-5.4',
+  'opencode-go': 'deepseek-v4-pro',
 };
 
 function requiredValue(
@@ -188,6 +194,27 @@ function resolveProviderFromEnv(
       usesCredentialProxy: false,
       allowDirectSecretInjection,
       apiKey: requiredValue(env.GEMINI_API_KEY, 'GEMINI_API_KEY', provider),
+    };
+  }
+
+  if (provider === 'opencode-go') {
+    if (!env.OPENCODE_GO_API_KEY) return undefined;
+    return {
+      name,
+      provider,
+      model:
+        modelOverride ||
+        env.OPENCODE_GO_MODEL ||
+        DEFAULT_MODEL_BY_PROVIDER['opencode-go'],
+      usesCredentialProxy: true,
+      allowDirectSecretInjection: false,
+      apiKey: requiredValue(
+        env.OPENCODE_GO_API_KEY,
+        'OPENCODE_GO_API_KEY',
+        provider,
+      ),
+      upstreamBaseURL:
+        env.OPENCODE_GO_BASE_URL || DEFAULT_UPSTREAM_BASE_URL['opencode-go'],
     };
   }
 
@@ -314,7 +341,8 @@ function normalizeYamlProvider(provider: string): LlmProvider {
   if (
     provider === 'anthropic' ||
     provider === 'openai' ||
-    provider === 'codex'
+    provider === 'codex' ||
+    provider === 'opencode-go'
   ) {
     return provider;
   }
@@ -416,7 +444,7 @@ function resolveLegacyProviderConfig(
 
   throw new Error(
     '[provider-config] No supported provider credentials found.\n' +
-      'Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OAS_CODEX_AUTH_PATH\n' +
+      'Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OAS_CODEX_AUTH_PATH, OPENCODE_GO_API_KEY\n' +
       '(Or have ~/.codex/auth.json from `codex login`)\n' +
       '\n' +
       'NOTE: OAuth-based authentication (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN) is not supported.\n' +
@@ -474,9 +502,13 @@ export function buildContainerProviderEnv(
   const providers: Record<string, ContainerProviderConfig> = {};
 
   for (const [name, config] of Object.entries(execution.providers)) {
-    if (config.provider === 'anthropic' || config.provider === 'openai') {
+    if (
+      config.provider === 'anthropic' ||
+      config.provider === 'openai' ||
+      config.provider === 'opencode-go'
+    ) {
       providers[name] = {
-        provider: config.provider,
+        provider: config.provider === 'opencode-go' ? 'openai' : config.provider,
         model: config.model,
         apiKey: `placeholder-${name}`,
         baseURL: `${proxyBaseUrl}/__provider/${encodeURIComponent(name)}`,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockEnv: Record<string, string> = {};
 const mockFiles = new Map<string, string>();
@@ -63,6 +63,10 @@ describe('provider-config', () => {
     resetMockEnv();
     mockFiles.clear();
     invalidateNanoclawYamlCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('falls back to legacy env detection when nanoclaw.yaml is absent', () => {
@@ -175,7 +179,131 @@ describe('provider-config', () => {
     expect(execution.fallbackProviders).toEqual(['claude', 'gemini']);
   });
 
+  it('resolves opencode-go provider from nanoclaw.yaml with default base URL', () => {
+    mockFiles.set(
+      `${process.cwd()}/nanoclaw.yaml`,
+      [
+        'providers:',
+        '  go:',
+        '    provider: opencode-go',
+        '    model: deepseek-v4-pro',
+      ].join('\n'),
+    );
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+    });
+
+    const config = resolveProviderConfig();
+
+    expect(config.source).toBe('yaml');
+    expect(config.defaultProvider).toBe('go');
+    expect(config.providers.go).toMatchObject({
+      provider: 'opencode-go',
+      model: 'deepseek-v4-pro',
+      usesCredentialProxy: true,
+      allowDirectSecretInjection: false,
+      apiKey: 'go-key',
+      upstreamBaseURL: 'https://opencode.ai/zen/go/v1',
+    });
+  });
+
+  it('respects OPENCODE_GO_BASE_URL override', () => {
+    mockFiles.set(
+      `${process.cwd()}/nanoclaw.yaml`,
+      [
+        'providers:',
+        '  go:',
+        '    provider: opencode-go',
+        '    model: kimi-k2.6',
+      ].join('\n'),
+    );
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+      OPENCODE_GO_BASE_URL: 'https://custom.opencode.example/v1',
+    });
+
+    const config = resolveProviderConfig();
+
+    expect(config.providers.go).toMatchObject({
+      upstreamBaseURL: 'https://custom.opencode.example/v1',
+    });
+  });
+
+  it('maps opencode-go to openai provider with proxy URL in container env', () => {
+    mockFiles.set(
+      `${process.cwd()}/nanoclaw.yaml`,
+      [
+        'providers:',
+        '  go:',
+        '    provider: opencode-go',
+        '    model: deepseek-v4-pro',
+      ].join('\n'),
+    );
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+    });
+
+    const config = resolveProviderConfig();
+    const env = buildContainerProviderEnv(
+      config,
+      undefined,
+      'host.docker.internal',
+      3001,
+    );
+    const parsed = JSON.parse(env.NANOCLAW_PROVIDER_CONFIG_JSON);
+
+    expect(parsed.defaultProvider).toBe('go');
+    expect(parsed.providers.go).toEqual({
+      provider: 'openai',
+      model: 'deepseek-v4-pro',
+      apiKey: 'placeholder-go',
+      baseURL: 'http://host.docker.internal:3001/__provider/go',
+    });
+  });
+
+  it('uses OPENCODE_GO_MODEL env var as model default', () => {
+    mockFiles.set(
+      `${process.cwd()}/nanoclaw.yaml`,
+      [
+        'providers:',
+        '  go:',
+        '    provider: opencode-go',
+        '    model: kimi-k2.6',
+      ].join('\n'),
+    );
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+    });
+
+    const config = resolveProviderConfig();
+
+    expect(config.providers.go.model).toBe('kimi-k2.6');
+  });
+
+  it('does not require ALLOW_DIRECT_SECRET_INJECTION for opencode-go', () => {
+    mockFiles.set(
+      `${process.cwd()}/nanoclaw.yaml`,
+      [
+        'providers:',
+        '  go:',
+        '    provider: opencode-go',
+        '    model: deepseek-v4-pro',
+      ].join('\n'),
+    );
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+      // ALLOW_DIRECT_SECRET_INJECTION は設定しない
+    });
+
+    expect(() => resolveProviderConfig()).not.toThrow();
+  });
+
   it('builds container env with proxy URLs and direct secrets', () => {
+    // process.env の実キーが mock を上書きしないよう stub する
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
+    vi.stubEnv('OPENAI_API_KEY', 'sk-openai');
+    vi.stubEnv('GEMINI_API_KEY', 'gem-key');
+    vi.stubEnv('ALLOW_DIRECT_SECRET_INJECTION', 'true');
     mockFiles.set(
       `${process.cwd()}/nanoclaw.yaml`,
       [
