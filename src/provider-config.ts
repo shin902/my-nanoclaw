@@ -72,6 +72,8 @@ const ENV_KEYS = [
   'ALLOW_DIRECT_SECRET_INJECTION',
 ] as const;
 
+// credential proxy を経由するプロバイダーのみ登録する。
+// google/codex は独自の認証フロー（OAuth / SDK）を持つため proxy を使わず、このマップには含まない。
 const DEFAULT_UPSTREAM_BASE_URL: Record<
   'anthropic' | 'openai' | 'opencode-go',
   string
