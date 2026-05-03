@@ -91,6 +91,11 @@ describe('provider-config', () => {
   });
 
   it('falls back to legacy env detection with opencode-go when nanoclaw.yaml is absent', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('GEMINI_API_KEY', '');
+    vi.stubEnv('OAS_CODEX_AUTH_PATH', '');
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'sk-go-key');
     Object.assign(mockEnv, {
       OPENCODE_GO_API_KEY: 'sk-go-key',
     });
@@ -200,6 +205,8 @@ describe('provider-config', () => {
   });
 
   it('resolves opencode-go provider from nanoclaw.yaml with default base URL', () => {
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
+    vi.stubEnv('OPENCODE_GO_BASE_URL', '');
     mockFiles.set(
       `${process.cwd()}/nanoclaw.yaml`,
       [
@@ -228,6 +235,8 @@ describe('provider-config', () => {
   });
 
   it('respects OPENCODE_GO_BASE_URL override', () => {
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
+    vi.stubEnv('OPENCODE_GO_BASE_URL', 'https://custom.opencode.example/v1');
     mockFiles.set(
       `${process.cwd()}/nanoclaw.yaml`,
       [
@@ -302,6 +311,12 @@ describe('provider-config', () => {
 
   it('uses OPENCODE_GO_MODEL env var as model when resolving via legacy env (no yaml)', () => {
     // YAML なしの場合、OPENCODE_GO_MODEL が model の優先ソースになる
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('GEMINI_API_KEY', '');
+    vi.stubEnv('OAS_CODEX_AUTH_PATH', '');
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
+    vi.stubEnv('OPENCODE_GO_MODEL', 'kimi-k2.6');
     Object.assign(mockEnv, {
       OPENCODE_GO_API_KEY: 'go-key',
       OPENCODE_GO_MODEL: 'kimi-k2.6',
