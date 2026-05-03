@@ -78,7 +78,7 @@ const DEFAULT_UPSTREAM_BASE_URL: Record<
 > = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com',
-  'opencode-go': 'https://opencode.ai/zen/go/v1',
+  'opencode-go': 'https://opencode.ai/zen/go',
 };
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProvider, string> = {

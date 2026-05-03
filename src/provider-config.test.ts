@@ -203,7 +203,7 @@ describe('provider-config', () => {
       usesCredentialProxy: true,
       allowDirectSecretInjection: false,
       apiKey: 'go-key',
-      upstreamBaseURL: 'https://opencode.ai/zen/go/v1',
+      upstreamBaseURL: 'https://opencode.ai/zen/go',
     });
   });
 
