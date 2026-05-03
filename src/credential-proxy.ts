@@ -54,6 +54,7 @@ function injectAuthHeaders(
     return;
   }
 
+  // opencode-go は OpenAI 互換 API のため Bearer token 形式を使用する
   delete headers['authorization'];
   headers['authorization'] = `Bearer ${apiKey}`;
 
