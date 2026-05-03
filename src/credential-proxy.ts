@@ -8,13 +8,13 @@ import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 
 import { logger } from './logger.js';
-import { resolveProviderConfig } from './provider-config.js';
+import { isProxiedProvider, ProxiedProvider, resolveProviderConfig } from './provider-config.js';
 
 const PROVIDER_ROUTE_PREFIX = '/__provider/';
 
 interface ProxyTarget {
   name: string;
-  provider: 'anthropic' | 'openai' | 'opencode-go';
+  provider: ProxiedProvider;
   apiKey: string;
   upstreamBaseURL: string;
 }
@@ -45,7 +45,7 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
 
 function injectAuthHeaders(
   headers: Record<string, string | number | string[] | undefined>,
-  provider: 'anthropic' | 'openai' | 'opencode-go',
+  provider: ProxiedProvider,
   apiKey: string,
 ): void {
   if (provider === 'anthropic') {
@@ -54,7 +54,7 @@ function injectAuthHeaders(
     return;
   }
 
-  // opencode-go は OpenAI 互換 API のため Bearer token 形式を使用する
+  // openai / opencode-go: OpenAI 互換 API のため Bearer token 形式を使用する
   delete headers['authorization'];
   headers['authorization'] = `Bearer ${apiKey}`;
 
@@ -69,11 +69,7 @@ function buildProxyTargets(): Record<string, ProxyTarget> {
   const targets: Record<string, ProxyTarget> = {};
 
   for (const [name, provider] of Object.entries(resolvedConfig.providers)) {
-    if (
-      provider.provider !== 'anthropic' &&
-      provider.provider !== 'openai' &&
-      provider.provider !== 'opencode-go'
-    ) {
+    if (!isProxiedProvider(provider.provider)) {
       continue;
     }
     targets[name] = {

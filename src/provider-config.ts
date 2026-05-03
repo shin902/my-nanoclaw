@@ -102,6 +102,12 @@ function requiredValue(
   );
 }
 
+export type ProxiedProvider = 'anthropic' | 'openai' | 'opencode-go';
+
+export function isProxiedProvider(p: LlmProvider): p is ProxiedProvider {
+  return p === 'anthropic' || p === 'openai' || p === 'opencode-go';
+}
+
 function isDirectSecretInjectionEnabled(value: string | undefined): boolean {
   return value === 'true';
 }
@@ -508,12 +514,10 @@ export function buildContainerProviderEnv(
   const providers: Record<string, ContainerProviderConfig> = {};
 
   for (const [name, config] of Object.entries(execution.providers)) {
-    if (
-      config.provider === 'anthropic' ||
-      config.provider === 'openai' ||
-      config.provider === 'opencode-go'
-    ) {
+    if (isProxiedProvider(config.provider)) {
       providers[name] = {
+        // コンテナ内の既存 OpenAI クライアントと互換性を保つため、
+        // opencode-go は OpenAI 互換 API として openai に変換する
         provider:
           config.provider === 'opencode-go' ? 'openai' : config.provider,
         model: config.model,

@@ -67,6 +67,7 @@ describe('provider-config', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    resetMockEnv();
   });
 
   it('falls back to legacy env detection when nanoclaw.yaml is absent', () => {
