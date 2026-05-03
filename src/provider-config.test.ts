@@ -90,6 +90,26 @@ describe('provider-config', () => {
     });
   });
 
+  it('falls back to legacy env detection with opencode-go when nanoclaw.yaml is absent', () => {
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'sk-go-key',
+    });
+
+    const config = resolveProviderConfig();
+
+    expect(config.source).toBe('env');
+    expect(config.defaultProvider).toBe('default');
+    expect(config.fallbackProviders).toEqual([]);
+    expect(config.providers.default).toMatchObject({
+      provider: 'opencode-go',
+      model: 'deepseek-v4-pro',
+      usesCredentialProxy: true,
+      allowDirectSecretInjection: false,
+      apiKey: 'sk-go-key',
+      upstreamBaseURL: 'https://opencode.ai/zen/go',
+    });
+  });
+
   it('loads named providers from nanoclaw.yaml', () => {
     mockFiles.set(
       `${process.cwd()}/nanoclaw.yaml`,
@@ -261,7 +281,7 @@ describe('provider-config', () => {
     });
   });
 
-  it('uses OPENCODE_GO_MODEL env var as model default', () => {
+  it('uses model configured in nanoclaw.yaml', () => {
     mockFiles.set(
       `${process.cwd()}/nanoclaw.yaml`,
       [
@@ -278,6 +298,19 @@ describe('provider-config', () => {
     const config = resolveProviderConfig();
 
     expect(config.providers.go.model).toBe('kimi-k2.6');
+  });
+
+  it('uses OPENCODE_GO_MODEL env var as model when resolving via legacy env (no yaml)', () => {
+    // YAML なしの場合、OPENCODE_GO_MODEL が model の優先ソースになる
+    Object.assign(mockEnv, {
+      OPENCODE_GO_API_KEY: 'go-key',
+      OPENCODE_GO_MODEL: 'kimi-k2.6',
+    });
+
+    const config = resolveProviderConfig();
+
+    expect(config.source).toBe('env');
+    expect(config.providers.default.model).toBe('kimi-k2.6');
   });
 
   it('does not require ALLOW_DIRECT_SECRET_INJECTION for opencode-go', () => {
