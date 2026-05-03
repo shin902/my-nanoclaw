@@ -54,7 +54,7 @@ const PROVIDER_PRIORITY: LlmProvider[] = [
   'opencode-go',
 ];
 
-const ENV_KEYS = [
+export const ENV_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_MODEL',

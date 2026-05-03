@@ -1,11 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockEnv: Record<string, string> = {};
-const mockFiles = new Map<string, string>();
+import { ENV_KEYS } from './provider-config.js';
 
-vi.mock('./env.js', () => ({
-  readEnvFile: vi.fn(() => ({ ...mockEnv })),
-}));
+const mockFiles = new Map<string, string>();
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -52,30 +49,27 @@ import {
   resolveProviderExecutionConfig,
 } from './provider-config.js';
 
-function resetMockEnv(): void {
-  for (const key of Object.keys(mockEnv)) {
-    delete mockEnv[key];
+function resetEnv(): void {
+  for (const key of ENV_KEYS) {
+    vi.stubEnv(key, '');
   }
 }
 
 describe('provider-config', () => {
   beforeEach(() => {
-    resetMockEnv();
+    resetEnv();
     mockFiles.clear();
     invalidateNanoclawYamlCache();
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    resetMockEnv();
   });
 
   it('falls back to legacy env detection when nanoclaw.yaml is absent', () => {
-    Object.assign(mockEnv, {
-      OPENAI_API_KEY: 'sk-openai',
-      OPENAI_BASE_URL: 'https://example.openai.local',
-      OPENAI_MODEL: 'gpt-4.1',
-    });
+    vi.stubEnv('OPENAI_API_KEY', 'sk-openai');
+    vi.stubEnv('OPENAI_BASE_URL', 'https://example.openai.local');
+    vi.stubEnv('OPENAI_MODEL', 'gpt-4.1');
 
     const config = resolveProviderConfig();
 
@@ -92,14 +86,7 @@ describe('provider-config', () => {
   });
 
   it('falls back to legacy env detection with opencode-go when nanoclaw.yaml is absent', () => {
-    vi.stubEnv('ANTHROPIC_API_KEY', '');
-    vi.stubEnv('OPENAI_API_KEY', '');
-    vi.stubEnv('GEMINI_API_KEY', '');
-    vi.stubEnv('OAS_CODEX_AUTH_PATH', '');
     vi.stubEnv('OPENCODE_GO_API_KEY', 'sk-go-key');
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'sk-go-key',
-    });
 
     const config = resolveProviderConfig();
 
@@ -132,10 +119,8 @@ describe('provider-config', () => {
         '  - fast',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      ANTHROPIC_API_KEY: 'sk-ant',
-      OPENAI_API_KEY: 'sk-openai',
-    });
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
+    vi.stubEnv('OPENAI_API_KEY', 'sk-openai');
 
     const config = resolveProviderConfig();
 
@@ -162,9 +147,7 @@ describe('provider-config', () => {
         '    model: gemini-2.5-flash',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      GEMINI_API_KEY: 'gem-key',
-    });
+    vi.stubEnv('GEMINI_API_KEY', 'gem-key');
 
     expect(() => resolveProviderConfig()).toThrow(
       'ALLOW_DIRECT_SECRET_INJECTION=true is not set',
@@ -191,12 +174,10 @@ describe('provider-config', () => {
         '  - gemini',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      ANTHROPIC_API_KEY: 'sk-ant',
-      OPENAI_API_KEY: 'sk-openai',
-      GEMINI_API_KEY: 'gem-key',
-      ALLOW_DIRECT_SECRET_INJECTION: 'true',
-    });
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
+    vi.stubEnv('OPENAI_API_KEY', 'sk-openai');
+    vi.stubEnv('GEMINI_API_KEY', 'gem-key');
+    vi.stubEnv('ALLOW_DIRECT_SECRET_INJECTION', 'true');
 
     const config = resolveProviderConfig();
     const execution = resolveProviderExecutionConfig(config, 'fast');
@@ -217,9 +198,6 @@ describe('provider-config', () => {
         '    model: deepseek-v4-pro',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-    });
 
     const config = resolveProviderConfig();
 
@@ -247,10 +225,6 @@ describe('provider-config', () => {
         '    model: kimi-k2.6',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-      OPENCODE_GO_BASE_URL: 'https://custom.opencode.example/v1',
-    });
 
     const config = resolveProviderConfig();
 
@@ -269,9 +243,7 @@ describe('provider-config', () => {
         '    model: deepseek-v4-pro',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-    });
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
 
     const config = resolveProviderConfig();
     const env = buildContainerProviderEnv(
@@ -301,9 +273,7 @@ describe('provider-config', () => {
         '    model: kimi-k2.6',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-    });
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
 
     const config = resolveProviderConfig();
 
@@ -312,16 +282,8 @@ describe('provider-config', () => {
 
   it('uses OPENCODE_GO_MODEL env var as model when resolving via legacy env (no yaml)', () => {
     // YAML なしの場合、OPENCODE_GO_MODEL が model の優先ソースになる
-    vi.stubEnv('ANTHROPIC_API_KEY', '');
-    vi.stubEnv('OPENAI_API_KEY', '');
-    vi.stubEnv('GEMINI_API_KEY', '');
-    vi.stubEnv('OAS_CODEX_AUTH_PATH', '');
     vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
     vi.stubEnv('OPENCODE_GO_MODEL', 'kimi-k2.6');
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-      OPENCODE_GO_MODEL: 'kimi-k2.6',
-    });
 
     const config = resolveProviderConfig();
 
@@ -339,10 +301,8 @@ describe('provider-config', () => {
         '    model: deepseek-v4-pro',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      OPENCODE_GO_API_KEY: 'go-key',
-      // ALLOW_DIRECT_SECRET_INJECTION は設定しない
-    });
+    vi.stubEnv('OPENCODE_GO_API_KEY', 'go-key');
+    // ALLOW_DIRECT_SECRET_INJECTION は設定しない
 
     expect(() => resolveProviderConfig()).not.toThrow();
   });
@@ -372,12 +332,6 @@ describe('provider-config', () => {
         '  - gemini',
       ].join('\n'),
     );
-    Object.assign(mockEnv, {
-      ANTHROPIC_API_KEY: 'sk-ant',
-      OPENAI_API_KEY: 'sk-openai',
-      GEMINI_API_KEY: 'gem-key',
-      ALLOW_DIRECT_SECRET_INJECTION: 'true',
-    });
 
     const config = resolveProviderConfig();
     const env = buildContainerProviderEnv(
