@@ -156,6 +156,61 @@ describe('credential-proxy', () => {
     );
   });
 
+  it('opencode-go provider is included in proxy targets', async () => {
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'deepseek-v4-pro',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-go-real-key',
+        upstreamBaseURL: `http://127.0.0.1:${upstreamPort}`,
+      },
+    });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('opencode-go route injects Authorization Bearer header and strips placeholder', async () => {
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'deepseek-v4-pro',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-go-real-key',
+        upstreamBaseURL: `http://127.0.0.1:${upstreamPort}`,
+      },
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer sk-go-real-key');
+  });
+
   it('returns 503 in disabled mode when only direct-injection providers exist', async () => {
     proxyPort = await startProxy({
       gemini: {
