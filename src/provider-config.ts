@@ -218,11 +218,7 @@ function resolveProviderFromEnv(
         DEFAULT_MODEL_BY_PROVIDER['opencode-go'],
       usesCredentialProxy: true,
       allowDirectSecretInjection: false,
-      apiKey: requiredValue(
-        env.OPENCODE_GO_API_KEY,
-        'OPENCODE_GO_API_KEY',
-        provider,
-      ),
+      apiKey: env.OPENCODE_GO_API_KEY,
       upstreamBaseURL:
         env.OPENCODE_GO_BASE_URL || DEFAULT_UPSTREAM_BASE_URL['opencode-go'],
     };
