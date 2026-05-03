@@ -6,7 +6,12 @@ import YAML from 'yaml';
 
 import { readEnvFile } from './env.js';
 
-export type LlmProvider = 'anthropic' | 'openai' | 'google' | 'codex' | 'opencode-go';
+export type LlmProvider =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'codex'
+  | 'opencode-go';
 
 export interface ProviderConfig {
   name: string;
@@ -67,7 +72,10 @@ const ENV_KEYS = [
   'ALLOW_DIRECT_SECRET_INJECTION',
 ] as const;
 
-const DEFAULT_UPSTREAM_BASE_URL: Record<'anthropic' | 'openai' | 'opencode-go', string> = {
+const DEFAULT_UPSTREAM_BASE_URL: Record<
+  'anthropic' | 'openai' | 'opencode-go',
+  string
+> = {
   anthropic: 'https://api.anthropic.com',
   openai: 'https://api.openai.com',
   'opencode-go': 'https://opencode.ai/zen/go/v1',
@@ -508,7 +516,8 @@ export function buildContainerProviderEnv(
       config.provider === 'opencode-go'
     ) {
       providers[name] = {
-        provider: config.provider === 'opencode-go' ? 'openai' : config.provider,
+        provider:
+          config.provider === 'opencode-go' ? 'openai' : config.provider,
         model: config.model,
         apiKey: `placeholder-${name}`,
         baseURL: `${proxyBaseUrl}/__provider/${encodeURIComponent(name)}`,
