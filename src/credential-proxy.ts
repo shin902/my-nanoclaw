@@ -45,7 +45,8 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
   }
   // basePath末尾セグメントとincomingPath先頭セグメントが重複する場合に除去
   // 例: basePath=/zen/go/v1 + incomingPath=/v1/chat → /zen/go/v1/chat
-  const incomingSegments = incomingPath.split('/').filter(Boolean);
+  const parsed = new URL(incomingPath, 'http://x');
+  const incomingSegments = parsed.pathname.split('/').filter(Boolean);
   const baseSegments = basePath.split('/').filter(Boolean);
   if (incomingSegments.length > 0 && baseSegments.length > 0) {
     const lastBase = baseSegments[baseSegments.length - 1];
