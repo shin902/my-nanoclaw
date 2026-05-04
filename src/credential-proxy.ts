@@ -191,6 +191,8 @@ export function startCredentialProxy(
             path: buildUpstreamPath(upstreamUrl, routed.upstreamPath),
             method: req.method,
             headers,
+            // 接続・読み取りタイムアウトを長めに設定（5分）
+            timeout: 300_000,
           } as RequestOptions,
           (upRes) => {
             res.writeHead(upRes.statusCode!, upRes.headers);
@@ -204,6 +206,14 @@ export function startCredentialProxy(
             });
           },
         );
+
+        upstream.setTimeout(300_000, () => {
+          logger.error(
+            { url: req.url, provider: routed.target.name },
+            'Credential proxy upstream request timeout',
+          );
+          upstream.destroy();
+        });
 
         const applyKeepAlive = () => {
           if (!upstream.socket) return false;
@@ -239,6 +249,12 @@ export function startCredentialProxy(
         upstream.end();
       });
     });
+
+    // サーバー側のタイムアウトも長めに設定
+    server.timeout = 600_000; // 10分
+    if ('requestTimeout' in server) {
+      (server as any).requestTimeout = 600_000;
+    }
 
     server.listen(port, host, () => {
       logger.info(
