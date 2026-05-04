@@ -223,12 +223,24 @@ export function startCredentialProxy(
           },
         );
 
+        let upstreamTimedOut = false;
         upstream.setTimeout(300_000, () => {
+          upstreamTimedOut = true;
           logger.error(
             { url: req.url, provider: routed.target.name },
             'Credential proxy upstream request timeout',
           );
-          upstream.destroy();
+
+          if (!res.headersSent && !res.destroyed) {
+            res.writeHead(504);
+            res.end('Gateway Timeout');
+          } else if (!res.writableEnded && !res.destroyed) {
+            res.destroy();
+          }
+
+          upstream.destroy(
+            new Error('Credential proxy upstream request timeout'),
+          );
         });
 
         const applyKeepAlive = () => {
@@ -253,10 +265,13 @@ export function startCredentialProxy(
             { err, url: req.url, provider: routed.target.name },
             'Credential proxy upstream error',
           );
+
+          if (res.writableEnded || res.destroyed) return;
+
           if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          } else if (!res.destroyed) {
+            res.writeHead(upstreamTimedOut ? 504 : 502);
+            res.end(upstreamTimedOut ? 'Gateway Timeout' : 'Bad Gateway');
+          } else {
             res.destroy();
           }
         });

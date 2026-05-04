@@ -22,7 +22,10 @@ import { resolveProviderConfig } from '../src/provider-config.js';
 function log(label: string, data?: unknown) {
   const ts = new Date().toISOString();
   if (data !== undefined) {
-    console.log(`[${ts}] [${label}]`, typeof data === 'object' ? JSON.stringify(data) : data);
+    console.log(
+      `[${ts}] [${label}]`,
+      typeof data === 'object' ? JSON.stringify(data) : data,
+    );
   } else {
     console.log(`[${ts}] [${label}]`);
   }
@@ -78,13 +81,27 @@ async function sendViaProxy(
   };
 
   return new Promise((resolve) => {
+    let settled = false;
+    let req: http.ClientRequest | undefined;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
     const timer = setTimeout(() => {
       result.error = `Timeout after ${timeoutMs}ms`;
       result.totalMs = Date.now() - startTime;
-      resolve(result);
+      if (req && !req.destroyed) {
+        req.removeAllListeners();
+        req.destroy(new Error(result.error));
+      }
+      finish();
     }, timeoutMs);
 
-    const req = http.request(
+    req = http.request(
       {
         hostname: '127.0.0.1',
         port: proxyPort,
@@ -113,50 +130,47 @@ async function sendViaProxy(
         });
 
         res.on('end', () => {
-          clearTimeout(timer);
           result.totalMs = Date.now() - startTime;
           result.success = res.statusCode === 200;
           if (!result.success) {
-            const bodyText = Buffer.concat(chunks).toString('utf-8').slice(0, 500);
+            const bodyText = Buffer.concat(chunks)
+              .toString('utf-8')
+              .slice(0, 500);
             result.error = `HTTP ${res.statusCode}: ${bodyText}`;
           }
-          resolve(result);
+          finish();
         });
 
         res.on('error', (err) => {
-          clearTimeout(timer);
           result.totalMs = Date.now() - startTime;
           result.error = `Response error: ${err.message}`;
-          resolve(result);
+          finish();
         });
 
         res.on('close', () => {
           // end が先に発火しない場合（例: 切断）
           if (result.totalMs === 0) {
-            clearTimeout(timer);
             result.totalMs = Date.now() - startTime;
             if (!result.error) {
               result.error = 'Connection closed unexpectedly';
             }
-            resolve(result);
+            finish();
           }
         });
       },
     );
 
     req.on('error', (err) => {
-      clearTimeout(timer);
       result.totalMs = Date.now() - startTime;
       result.error = `Request error: ${err.message}`;
-      resolve(result);
+      finish();
     });
 
     req.on('timeout', () => {
-      clearTimeout(timer);
       req.destroy();
       result.totalMs = Date.now() - startTime;
       result.error = 'Socket timeout';
-      resolve(result);
+      finish();
     });
 
     req.write(payload);
@@ -169,7 +183,11 @@ async function main() {
 
   // 1. 認証情報の確認
   const env = {
-    ...readEnvFile(['OPENCODE_GO_API_KEY', 'OPENCODE_GO_BASE_URL', 'OPENCODE_GO_MODEL']),
+    ...readEnvFile([
+      'OPENCODE_GO_API_KEY',
+      'OPENCODE_GO_BASE_URL',
+      'OPENCODE_GO_MODEL',
+    ]),
     ...Object.fromEntries(
       ['OPENCODE_GO_API_KEY', 'OPENCODE_GO_BASE_URL', 'OPENCODE_GO_MODEL']
         .map((k) => [k, process.env[k]])
@@ -178,7 +196,9 @@ async function main() {
   };
 
   if (!env.OPENCODE_GO_API_KEY) {
-    console.error('Error: OPENCODE_GO_API_KEY is not set in .env or environment');
+    console.error(
+      'Error: OPENCODE_GO_API_KEY is not set in .env or environment',
+    );
     process.exit(1);
   }
 
@@ -219,7 +239,11 @@ async function main() {
     // 4. テストケース実行
     const testCases = [
       { name: 'small-request', payload: buildPayload(1_000), streaming: false },
-      { name: 'medium-request', payload: buildPayload(100_000), streaming: false }
+      {
+        name: 'medium-request',
+        payload: buildPayload(100_000),
+        streaming: false,
+      },
     ];
 
     for (const tc of testCases) {
