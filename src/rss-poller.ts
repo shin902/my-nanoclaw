@@ -32,7 +32,8 @@ function extractLink(item: RssItem): string {
   if (typeof l === 'string') return l.trim();
   if (Array.isArray(l)) {
     // RFC 4287: rel 省略は rel="alternate" と同義
-    const alt = l.find((x) => !x['@_rel'] || x['@_rel'] === 'alternate') ?? l[0];
+    const alt =
+      l.find((x) => !x['@_rel'] || x['@_rel'] === 'alternate') ?? l[0];
     return alt?.['@_href']?.trim() ?? '';
   }
   return l['@_href']?.trim() ?? '';

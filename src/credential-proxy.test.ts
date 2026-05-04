@@ -12,9 +12,13 @@ const mockResolvedProviderConfig = vi.hoisted((): { value: any } => ({
   },
 }));
 
-vi.mock('./provider-config.js', () => ({
-  resolveProviderConfig: vi.fn(() => mockResolvedProviderConfig.value),
-}));
+vi.mock('./provider-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./provider-config.js')>();
+  return {
+    ...actual,
+    resolveProviderConfig: vi.fn(() => mockResolvedProviderConfig.value),
+  };
+});
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
@@ -154,6 +158,61 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['authorization']).toBe(
       'Bearer sk-openai-real-key',
     );
+  });
+
+  it('opencode-go provider is included in proxy targets', async () => {
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'deepseek-v4-pro',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-go-real-key',
+        upstreamBaseURL: `http://127.0.0.1:${upstreamPort}`,
+      },
+    });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('opencode-go route injects Authorization Bearer header and strips placeholder', async () => {
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'deepseek-v4-pro',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-go-real-key',
+        upstreamBaseURL: `http://127.0.0.1:${upstreamPort}`,
+      },
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer sk-go-real-key');
   });
 
   it('returns 503 in disabled mode when only direct-injection providers exist', async () => {
