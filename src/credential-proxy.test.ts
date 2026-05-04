@@ -12,9 +12,13 @@ const mockResolvedProviderConfig = vi.hoisted((): { value: any } => ({
   },
 }));
 
-vi.mock('./provider-config.js', () => ({
-  resolveProviderConfig: vi.fn(() => mockResolvedProviderConfig.value),
-}));
+vi.mock('./provider-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./provider-config.js')>();
+  return {
+    ...actual,
+    resolveProviderConfig: vi.fn(() => mockResolvedProviderConfig.value),
+  };
+});
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },

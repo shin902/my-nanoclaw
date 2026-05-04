@@ -95,7 +95,7 @@ describe('provider-config', () => {
     expect(config.fallbackProviders).toEqual([]);
     expect(config.providers.default).toMatchObject({
       provider: 'opencode-go',
-      model: 'deepseek-v4-pro',
+      model: 'kimi-k2.6',
       usesCredentialProxy: true,
       allowDirectSecretInjection: false,
       apiKey: 'sk-go-key',
