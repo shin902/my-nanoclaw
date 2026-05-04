@@ -43,6 +43,22 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
   ) {
     return incomingPath;
   }
+  // basePath の末尾セグメントと incomingPath の先頭セグメントが重複する場合、
+  // 重複を除去する。例: basePath=/zen/go/v1 + incomingPath=/v1/chat/completions
+  // → /zen/go/v1/chat/completions
+  const incomingSegments = incomingPath.split('/').filter(Boolean);
+  const baseSegments = basePath.split('/').filter(Boolean);
+  if (incomingSegments.length > 0 && baseSegments.length > 0) {
+    const lastBase = baseSegments[baseSegments.length - 1];
+    if (incomingSegments[0] === lastBase) {
+      const deduped = '/' + incomingSegments.slice(1).join('/');
+      return `${basePath}${deduped}`;
+    }
+  }
+  // const firstSeg = incomingPath.split('/')[1];
+  // if (firstSeg && basePath.endsWith('/' + firstSeg)) {
+  //   return basePath + incomingPath.slice(firstSeg.length + 1);
+  // }
 
   return `${basePath}${incomingPath}`;
 }
