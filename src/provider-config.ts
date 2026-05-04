@@ -88,7 +88,7 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProvider, string> = {
   openai: 'gpt-4.1-mini',
   google: 'gemini-2.5-flash',
   codex: 'gpt-5.4',
-  'opencode-go': 'deepseek-v4-pro',
+  'opencode-go': 'kimi-k2.6',
 };
 
 function requiredValue(
