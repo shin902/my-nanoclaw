@@ -8,7 +8,11 @@ import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 
 import { logger } from './logger.js';
-import { isProxiedProvider, ProxiedProvider, resolveProviderConfig } from './provider-config.js';
+import {
+  isProxiedProvider,
+  ProxiedProvider,
+  resolveProviderConfig,
+} from './provider-config.js';
 
 const PROVIDER_ROUTE_PREFIX = '/__provider/';
 
