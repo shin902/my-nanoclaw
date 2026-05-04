@@ -62,12 +62,15 @@ describe('credential-proxy', () => {
   let proxyPort: number;
   let upstreamPort: number;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
+  let lastUpstreamUrl: string = '';
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    lastUpstreamUrl = '';
 
     upstreamServer = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
+      lastUpstreamUrl = req.url ?? '';
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -239,6 +242,98 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(503);
     expect(res.body).toContain('disabled');
+  });
+
+  it('upstreamBaseURL with pathname de-duplicates overlapping first segment', async () => {
+    lastUpstreamUrl = '';
+
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'deepseek-v4-pro',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-go-real-key',
+        upstreamBaseURL: `http://127.0.0.1:${upstreamPort}/zen/go/v1`,
+      },
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    // /zen/go/v1 + /v1/chat/completions → 重複する v1 を除去 → /zen/go/v1/chat/completions
+    expect(lastUpstreamUrl).toBe('/zen/go/v1/chat/completions');
+  });
+
+  it('returns 502 when upstream returns an error', async () => {
+    const errorServer = http.createServer((req, res) => {
+      res.writeHead(502);
+      res.end('Bad Gateway from upstream');
+    });
+    await new Promise<void>((r) => errorServer.listen(0, r));
+    const errorPort = (errorServer.address() as AddressInfo).port;
+
+    try {
+      proxyPort = await startProxy({
+        go: {
+          name: 'go',
+          provider: 'opencode-go',
+          model: 'test-model',
+          usesCredentialProxy: true,
+          allowDirectSecretInjection: false,
+          apiKey: 'sk-test',
+          upstreamBaseURL: `http://127.0.0.1:${errorPort}`,
+        },
+      });
+
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/__provider/go/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+        },
+        '{}',
+      );
+
+      expect(res.statusCode).toBe(502);
+    } finally {
+      await new Promise<void>((r) => errorServer.close(() => r()));
+    }
+  });
+
+  it('returns 502 when upstream connection is refused', async () => {
+    proxyPort = await startProxy({
+      go: {
+        name: 'go',
+        provider: 'opencode-go',
+        model: 'test-model',
+        usesCredentialProxy: true,
+        allowDirectSecretInjection: false,
+        apiKey: 'sk-test',
+        upstreamBaseURL: 'http://127.0.0.1:1', // ポート1は通常使用不可
+      },
+    });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/__provider/go/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(502);
   });
 
   it('returns 404 for unknown provider routes', async () => {

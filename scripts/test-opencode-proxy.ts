@@ -12,7 +12,6 @@
  */
 
 import http from 'http';
-import https from 'https';
 import { AddressInfo } from 'net';
 import { readEnvFile } from '../src/env.js';
 import { startCredentialProxy } from '../src/credential-proxy.js';
@@ -42,23 +41,16 @@ interface TestResult {
   error?: string;
 }
 
-function buildPayload(sizeChars: number): object {
+function buildPayload(sizeChars: number, model: string): object {
   const baseMessage =
     'これはテストメッセージです。タイムアウトの原因を調査するために大量のコンテキストを送信します。';
   const repeatCount = Math.ceil(sizeChars / baseMessage.length);
   const largeContent = baseMessage.repeat(repeatCount).slice(0, sizeChars);
 
   return {
-    model: 'kimi-k2.6',
+    model,
     messages: [{ role: 'user', content: largeContent }],
     max_tokens: 1024,
-  };
-}
-
-function buildStreamingPayload(sizeChars: number): object {
-  return {
-    ...buildPayload(sizeChars),
-    stream: true,
   };
 }
 
@@ -238,11 +230,13 @@ async function main() {
   try {
     // 4. テストケース実行
     const testCases = [
-      { name: 'small-request', payload: buildPayload(1_000), streaming: false },
+      {
+        name: 'small-request',
+        payload: buildPayload(1_000, providerConfig.model!),
+      },
       {
         name: 'medium-request',
-        payload: buildPayload(100_000),
-        streaming: false,
+        payload: buildPayload(100_000, providerConfig.model!),
       },
     ];
 
@@ -252,7 +246,7 @@ async function main() {
         proxyPort,
         providerName,
         tc.payload,
-        tc.streaming ? 300_000 : 120_000,
+        120_000,
       );
       result.name = tc.name;
       results.push(result);

@@ -51,7 +51,7 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
     const lastBase = baseSegments[baseSegments.length - 1];
     if (incomingSegments[0] === lastBase) {
       const deduped = '/' + incomingSegments.slice(1).join('/');
-      return `${basePath}${deduped}`;
+      return `${basePath}${deduped}${parsed.search}`;
     }
   }
 
@@ -254,10 +254,12 @@ export function startCredentialProxy(
         });
 
         upstream.on('error', (err) => {
-          logger.error(
-            { err, url: req.url, provider: routed.target.name },
-            'Credential proxy upstream error',
-          );
+          if (!upstreamTimedOut) {
+            logger.error(
+              { err, url: req.url, provider: routed.target.name },
+              'Credential proxy upstream error',
+            );
+          }
 
           if (res.writableEnded || res.destroyed) return;
 
