@@ -9,6 +9,7 @@ dist/
 store/
 data/
 logs/
+feedcord/*
 
 # Groups - only track base structure and specific CLAUDE.md files
 groups/*
