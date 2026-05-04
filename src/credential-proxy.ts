@@ -43,9 +43,8 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
   ) {
     return incomingPath;
   }
-  // basePath の末尾セグメントと incomingPath の先頭セグメントが重複する場合、
-  // 重複を除去する。例: basePath=/zen/go/v1 + incomingPath=/v1/chat/completions
-  // → /zen/go/v1/chat/completions
+  // basePath末尾セグメントとincomingPath先頭セグメントが重複する場合に除去
+  // 例: basePath=/zen/go/v1 + incomingPath=/v1/chat → /zen/go/v1/chat
   const incomingSegments = incomingPath.split('/').filter(Boolean);
   const baseSegments = basePath.split('/').filter(Boolean);
   if (incomingSegments.length > 0 && baseSegments.length > 0) {
@@ -55,10 +54,6 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
       return `${basePath}${deduped}`;
     }
   }
-  // const firstSeg = incomingPath.split('/')[1];
-  // if (firstSeg && basePath.endsWith('/' + firstSeg)) {
-  //   return basePath + incomingPath.slice(firstSeg.length + 1);
-  // }
 
   return `${basePath}${incomingPath}`;
 }
@@ -207,8 +202,6 @@ export function startCredentialProxy(
             path: buildUpstreamPath(upstreamUrl, routed.upstreamPath),
             method: req.method,
             headers,
-            // 接続・読み取りタイムアウトを長めに設定（5分）
-            timeout: 300_000,
           } as RequestOptions,
           (upRes) => {
             res.writeHead(upRes.statusCode!, upRes.headers);
@@ -281,11 +274,8 @@ export function startCredentialProxy(
       });
     });
 
-    // サーバー側のタイムアウトも長めに設定
-    server.timeout = 600_000; // 10分
-    if ('requestTimeout' in server) {
-      (server as any).requestTimeout = 600_000;
-    }
+    server.timeout = 600_000;
+    (server as Server & { requestTimeout?: number }).requestTimeout = 600_000;
 
     server.listen(port, host, () => {
       logger.info(
