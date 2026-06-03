@@ -43,6 +43,18 @@ function buildUpstreamPath(upstreamUrl: URL, requestUrl?: string): string {
   ) {
     return incomingPath;
   }
+  // basePath末尾セグメントとincomingPath先頭セグメントが重複する場合に除去
+  // 例: basePath=/zen/go/v1 + incomingPath=/v1/chat → /zen/go/v1/chat
+  const parsed = new URL(incomingPath, 'http://x');
+  const incomingSegments = parsed.pathname.split('/').filter(Boolean);
+  const baseSegments = basePath.split('/').filter(Boolean);
+  if (incomingSegments.length > 0 && baseSegments.length > 0) {
+    const lastBase = baseSegments[baseSegments.length - 1];
+    if (incomingSegments[0] === lastBase) {
+      const deduped = '/' + incomingSegments.slice(1).join('/');
+      return `${basePath}${deduped}${parsed.search}`;
+    }
+  }
 
   return `${basePath}${incomingPath}`;
 }
@@ -205,6 +217,26 @@ export function startCredentialProxy(
           },
         );
 
+        let upstreamTimedOut = false;
+        upstream.setTimeout(300_000, () => {
+          upstreamTimedOut = true;
+          logger.error(
+            { url: req.url, provider: routed.target.name },
+            'Credential proxy upstream request timeout',
+          );
+
+          if (!res.headersSent && !res.destroyed) {
+            res.writeHead(504);
+            res.end('Gateway Timeout');
+          } else if (!res.writableEnded && !res.destroyed) {
+            res.destroy();
+          }
+
+          upstream.destroy(
+            new Error('Credential proxy upstream request timeout'),
+          );
+        });
+
         const applyKeepAlive = () => {
           if (!upstream.socket) return false;
           upstream.socket.setKeepAlive(true, 30_000);
@@ -223,14 +255,19 @@ export function startCredentialProxy(
         });
 
         upstream.on('error', (err) => {
-          logger.error(
-            { err, url: req.url, provider: routed.target.name },
-            'Credential proxy upstream error',
-          );
+          if (!upstreamTimedOut) {
+            logger.error(
+              { err, url: req.url, provider: routed.target.name },
+              'Credential proxy upstream error',
+            );
+          }
+
+          if (res.writableEnded || res.destroyed) return;
+
           if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          } else if (!res.destroyed) {
+            res.writeHead(upstreamTimedOut ? 504 : 502);
+            res.end(upstreamTimedOut ? 'Gateway Timeout' : 'Bad Gateway');
+          } else {
             res.destroy();
           }
         });
@@ -239,6 +276,9 @@ export function startCredentialProxy(
         upstream.end();
       });
     });
+
+    server.timeout = 600_000;
+    (server as Server & { requestTimeout?: number }).requestTimeout = 600_000;
 
     server.listen(port, host, () => {
       logger.info(
