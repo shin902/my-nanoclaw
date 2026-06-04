@@ -168,6 +168,23 @@ export class DiscordChannel implements Channel {
         }
       }
 
+      // embeds を処理 — FeedCord 等の bot が embed のみで投稿する場合
+      if (message.embeds.length > 0) {
+        const embedText = message.embeds
+          .map((embed) => {
+            const parts: string[] = [];
+            if (embed.title) parts.push(embed.title);
+            if (embed.url) parts.push(embed.url);
+            if (embed.description) parts.push(embed.description);
+            return parts.join('\n');
+          })
+          .filter(Boolean)
+          .join('\n\n');
+        if (embedText) {
+          content = content ? `${content}\n${embedText}` : embedText;
+        }
+      }
+
       // リプライ文脈を処理 — 誰への返信かを含める
       if (message.reference?.messageId) {
         try {
